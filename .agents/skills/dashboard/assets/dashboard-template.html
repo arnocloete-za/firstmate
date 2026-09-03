@@ -1,0 +1,433 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Fleet Dashboard</title>
+<style>
+/* ============================================================
+   Fleet dashboard - deliberately plain "internal tool" styling.
+   No display face, no illustration, no brand chrome: this page
+   exists so the captain can scan project health in one glance.
+   ============================================================ */
+:root {
+  color-scheme: light;
+  --bg-page:      #f9f9f7;
+  --bg-surface:   #fcfcfb;
+  --bg-raised:    #ffffff;
+  --text-primary: #0b0b0b;
+  --text-secondary: #52514e;
+  --text-muted:   #898781;
+  --border:       rgba(11, 11, 11, 0.10);
+  --border-strong: #c3c2b7;
+  --good:         #0ca30c;
+  --good-soft:    #e4f5e4;
+  --critical:     #d03b3b;
+  --critical-soft: #fbe8e8;
+  --warning:      #a8710a;
+  --warning-soft: #fbeed2;
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --bg-page:      #0d0d0d;
+    --bg-surface:   #1a1a19;
+    --bg-raised:    #212120;
+    --text-primary: #ffffff;
+    --text-secondary: #c3c2b7;
+    --text-muted:   #898781;
+    --border:       rgba(255, 255, 255, 0.10);
+    --border-strong: #383835;
+    --good:         #0ca30c;
+    --good-soft:    #123312;
+    --critical:     #e66767;
+    --critical-soft: #3a1414;
+    --warning:      #d9a441;
+    --warning-soft: #362a10;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg-page);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.45;
+}
+main {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 24px 20px 48px;
+}
+header.page-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px 24px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--border-strong);
+  margin-bottom: 20px;
+}
+header.page-head h1 {
+  font-size: 1.15rem;
+  font-weight: 700;
+  margin: 0;
+  letter-spacing: 0.01em;
+}
+.generated {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+.summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  margin-bottom: 20px;
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+}
+.summary strong {
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+.summary .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 5px; vertical-align: middle; }
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 12px;
+}
+.card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.card.open { border-color: var(--border-strong); }
+button.card-head {
+  all: unset;
+  box-sizing: border-box;
+  width: 100%;
+  cursor: pointer;
+  padding: 12px 14px;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 6px 10px;
+}
+button.card-head:focus-visible {
+  outline: 2px solid var(--text-primary);
+  outline-offset: -2px;
+}
+.status-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  grid-row: 1 / 3;
+}
+.status-dot.clean { background: var(--good); }
+.status-dot.dirty { background: var(--critical); }
+.status-dot.unknown { background: var(--text-muted); }
+.proj-name {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: 0.95rem;
+  overflow-wrap: anywhere;
+}
+.status-label {
+  grid-column: 3;
+  grid-row: 1;
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 2px 6px;
+  border-radius: 3px;
+  white-space: nowrap;
+}
+.status-label.clean { color: var(--good); background: var(--good-soft); }
+.status-label.dirty { color: var(--critical); background: var(--critical-soft); }
+.status-label.unknown { color: var(--text-muted); background: var(--border); }
+.branch-row {
+  grid-column: 2 / 4;
+  grid-row: 2;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+}
+.branch-name { overflow-wrap: anywhere; }
+.branch-flag {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--warning);
+  background: var(--warning-soft);
+  border-radius: 3px;
+  padding: 1px 5px;
+  font-family: var(--font-sans);
+  font-weight: 600;
+  font-size: 0.72rem;
+  white-space: nowrap;
+}
+.last-commit {
+  grid-column: 2 / 4;
+  grid-row: 3;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+.unavailable-reason {
+  grid-column: 2 / 4;
+  grid-row: 2;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  font-style: italic;
+}
+.commits-panel {
+  display: none;
+  border-top: 1px solid var(--border);
+  padding: 8px 14px 12px;
+  background: var(--bg-raised);
+}
+.card:hover .commits-panel,
+.card.open .commits-panel {
+  display: block;
+}
+.commits-panel ol {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.commits-panel li {
+  display: grid;
+  grid-template-columns: 5.5em 11em 1fr;
+  gap: 10px;
+  padding: 4px 0;
+  font-family: var(--font-mono);
+  font-size: 0.76rem;
+  border-bottom: 1px dotted var(--border);
+}
+.commits-panel li:last-child { border-bottom: none; }
+.commits-panel .hash { color: var(--text-muted); }
+.commits-panel .date { color: var(--text-secondary); white-space: nowrap; }
+.commits-panel .subject { color: var(--text-primary); font-family: var(--font-sans); overflow-wrap: anywhere; }
+.commits-panel .author {
+  grid-column: 1 / 4;
+  color: var(--text-muted);
+  font-family: var(--font-sans);
+  font-size: 0.72rem;
+  padding-bottom: 2px;
+}
+.empty-state {
+  padding: 32px;
+  text-align: center;
+  color: var(--text-muted);
+}
+</style>
+</head>
+<body>
+<main>
+  <header class="page-head">
+    <h1>Fleet dashboard</h1>
+    <span class="generated" id="generated-at"></span>
+  </header>
+  <div class="summary" id="summary"></div>
+  <div class="grid" id="grid"></div>
+</main>
+<script id="dashboard-data" type="application/json">
+__FM_DASHBOARD_DATA__
+</script>
+<script>
+(function () {
+  var raw = document.getElementById('dashboard-data').textContent;
+  var data;
+  try {
+    data = JSON.parse(raw);
+  } catch (e) {
+    document.getElementById('grid').innerHTML = '<div class="empty-state">Could not read dashboard data.</div>';
+    return;
+  }
+
+  var projects = data.projects || [];
+
+  document.getElementById('generated-at').textContent =
+    'generated ' + (data.generated_at || 'unknown');
+
+  function attentionScore(p) {
+    if (p.available === false) return 3;
+    if (p.clean === false) return 2;
+    if (p.on_default === false) return 1;
+    return 0;
+  }
+  projects = projects.slice().sort(function (a, b) {
+    return attentionScore(b) - attentionScore(a);
+  });
+
+  var clean = 0, dirty = 0, offDefault = 0, unavailable = 0;
+  projects.forEach(function (p) {
+    if (p.available === false) { unavailable++; return; }
+    if (p.clean) clean++; else dirty++;
+    if (p.on_default === false) offDefault++;
+  });
+
+  var summaryEl = document.getElementById('summary');
+  summaryEl.appendChild(strongify(projects.length + ' project' + (projects.length === 1 ? '' : 's'), 'clean'));
+  summaryEl.appendChild(strongify(dirty + ' dirty', 'dirty'));
+  summaryEl.appendChild(strongify(clean + ' clean', 'clean'));
+  summaryEl.appendChild(strongify(offDefault + ' off default branch', 'unknown'));
+  if (unavailable > 0) {
+    summaryEl.appendChild(strongify(unavailable + ' unavailable', 'unknown'));
+  }
+
+  function strongify(text, dotClass) {
+    var span = document.createElement('span');
+    var dot = document.createElement('span');
+    dot.className = 'dot ' + dotClass;
+    span.appendChild(dot);
+    var parts = text.split(/(\d+)/);
+    parts.forEach(function (part, i) {
+      if (i === 1) {
+        var strong = document.createElement('strong');
+        strong.textContent = part;
+        span.appendChild(strong);
+      } else if (part) {
+        span.appendChild(document.createTextNode(part));
+      }
+    });
+    return span;
+  }
+
+  var grid = document.getElementById('grid');
+  if (projects.length === 0) {
+    grid.innerHTML = '<div class="empty-state">No projects registered.</div>';
+    return;
+  }
+
+  projects.forEach(function (p) {
+    grid.appendChild(renderCard(p));
+  });
+
+  function renderCard(p) {
+    var card = document.createElement('div');
+    card.className = 'card';
+
+    var dot = document.createElement('span');
+    var label = document.createElement('span');
+    var name = document.createElement('span');
+    name.className = 'proj-name';
+    name.textContent = p.name;
+
+    if (p.available === false) {
+      var head = document.createElement('div');
+      head.className = 'card-head';
+      head.appendChild(name);
+
+      dot.className = 'status-dot unknown';
+      label.className = 'status-label unknown';
+      label.textContent = 'unavailable';
+      head.appendChild(dot);
+      head.appendChild(label);
+
+      var reason = document.createElement('div');
+      reason.className = 'unavailable-reason';
+      reason.textContent = p.reason || 'clone not found';
+      head.appendChild(reason);
+
+      card.appendChild(head);
+      return card;
+    }
+
+    var button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'card-head';
+    button.setAttribute('aria-expanded', 'false');
+    button.appendChild(name);
+
+    dot.className = 'status-dot ' + (p.clean ? 'clean' : 'dirty');
+    label.className = 'status-label ' + (p.clean ? 'clean' : 'dirty');
+    label.textContent = p.clean ? 'clean' : 'dirty';
+    button.appendChild(dot);
+    button.appendChild(label);
+
+    var branchRow = document.createElement('div');
+    branchRow.className = 'branch-row';
+    var branchName = document.createElement('span');
+    branchName.className = 'branch-name';
+    branchName.textContent = p.branch || 'unknown';
+    branchRow.appendChild(branchName);
+    if (p.on_default === false) {
+      var flag = document.createElement('span');
+      flag.className = 'branch-flag';
+      flag.title = 'Not on default branch (' + (p.default_branch || 'unknown') + ')';
+      flag.textContent = '⚑ not default';
+      branchRow.appendChild(flag);
+    }
+    button.appendChild(branchRow);
+
+    var lastCommit = document.createElement('div');
+    lastCommit.className = 'last-commit';
+    if (p.last_commit && p.last_commit.date) {
+      lastCommit.textContent = fmtDate(p.last_commit.date) + ' · ' + (p.last_commit.author || 'unknown');
+    } else {
+      lastCommit.textContent = 'no commits';
+    }
+    button.appendChild(lastCommit);
+
+    button.addEventListener('click', function () {
+      var isOpen = card.classList.toggle('open');
+      button.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+    });
+    card.appendChild(button);
+
+    var panel = document.createElement('div');
+    panel.className = 'commits-panel';
+    var ol = document.createElement('ol');
+    (p.commits || []).forEach(function (c) {
+      var li = document.createElement('li');
+
+      var authorLine = document.createElement('span');
+      authorLine.className = 'author';
+      authorLine.textContent = c.author || 'unknown';
+      li.appendChild(authorLine);
+
+      var hash = document.createElement('span');
+      hash.className = 'hash';
+      hash.textContent = c.hash || '';
+      li.appendChild(hash);
+
+      var date = document.createElement('span');
+      date.className = 'date';
+      date.textContent = fmtDate(c.date);
+      li.appendChild(date);
+
+      var subject = document.createElement('span');
+      subject.className = 'subject';
+      subject.textContent = c.subject || '';
+      li.appendChild(subject);
+
+      ol.appendChild(li);
+    });
+    panel.appendChild(ol);
+    card.appendChild(panel);
+
+    return card;
+  }
+
+  function fmtDate(iso) {
+    if (!iso) return 'unknown';
+    var d = new Date(iso);
+    if (isNaN(d.getTime())) return iso;
+    return d.toISOString().slice(0, 16).replace('T', ' ');
+  }
+})();
+</script>
+</body>
+</html>

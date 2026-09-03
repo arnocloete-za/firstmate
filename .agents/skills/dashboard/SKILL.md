@@ -1,0 +1,80 @@
+---
+name: dashboard
+description: >-
+  Run the fleet check (bearings) and then build and serve a visual project-status
+  dashboard on a local port.
+  Use when the captain invokes /dashboard or asks for a visual fleet/project status
+  board, a dashboard of registered projects, or "what needs attention across my
+  projects".
+user-invocable: true
+metadata:
+  internal: true
+---
+
+# dashboard
+
+`/dashboard` is for launch: a quick bearings check plus a visual board of every
+registered project's git health, so the captain can see what needs attention in
+one glance.
+It is operationally read-only apart from the ordinary bearings side effects and
+the dashboard's own generated files under `$FM_HOME/.dashboard/`; it never
+fetches, pulls, commits, or otherwise mutates a project checkout.
+
+## What it does
+
+1. **Run bearings exactly as plain `/bearings` does.**
+   Load the `bearings` skill and follow its plain `/bearings` invocation - steps
+   1 through 3 of its "What it does" - to gather the snapshot via
+   `bin/fm-bearings-snapshot.sh` and compose the four-section chat digest.
+   Do not fork or duplicate that fleet-state reader, and do not add file or
+   lavish mode unless the captain separately asks for `/bearings file` or
+   `/bearings lavish`.
+
+2. **Gather every registered project's git status.**
+   Run `bin/fm-dashboard-snapshot.sh > <tmp>.json`.
+   Its header owns the exact `fm-dashboard-snapshot.v1` output contract: per
+   registered project, working-tree cleanliness, the last commit's date and
+   author, the last 5-10 commits, and the current branch versus that repo's own
+   default branch.
+   Every check it runs is read-only.
+
+3. **Build and serve the dashboard.**
+   Run `bin/fm-dashboard-serve.sh build <tmp>.json`.
+   It injects the snapshot into the shipped template
+   (`assets/dashboard-template.html`) at the stable path
+   `$FM_HOME/.dashboard/index.html`, and serves that directory with a plain
+   local static HTTP server bound to `127.0.0.1` - not `lavish-axi` - because
+   this is a read-only, regenerate-on-each-run status page with no captain
+   feedback loop for a session to poll.
+   A server already running for this home is reused (rebuilt content is picked
+   up on the browser's next request, no restart needed); otherwise a fresh one
+   is started on the first free port at or after 4590.
+   Its output gives the served URL.
+
+4. **Report both to the captain.**
+   Send the bearings four-section chat digest, then the dashboard URL from step
+   3, in the same reply.
+   Do not describe the dashboard's internal file paths, the server process, or
+   the port-selection mechanics; just the URL and what it shows (project health
+   at a glance - clean/dirty, branch, last commit).
+
+## Design intent
+
+The dashboard is deliberately plain "internal tool" styling per the captain's
+own instruction, not the warm nautical chrome used for captain-facing
+surfaces like the bearings board: a status grid, restrained color reserved for
+the clean/dirty and off-default-branch signals, monospace where it helps
+scanning.
+Projects are sorted worst-first (unavailable, then dirty, then off-default
+branch, then clean) so what needs attention surfaces without scrolling.
+Do not restyle it toward the nautical/warm-paper design system without an
+explicit captain request to do so.
+
+## When something looks unavailable
+
+A project the snapshot marks `available: false` (its resolved clone path
+does not exist, or is not a git checkout) renders as a distinct muted card
+with the reason, sorted to the front alongside dirty projects - it is a
+signal that registry state needs attention, not silently dropped.
+This is expected for a stale or not-yet-cloned registry entry; do not treat it
+as a script failure.
