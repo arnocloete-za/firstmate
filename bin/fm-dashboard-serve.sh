@@ -211,11 +211,12 @@ command_build() {
 }
 
 command_stop() {
-  local existing pid
+  local existing pid port
   existing=$(read_state || true)
   [ -n "$existing" ] || { printf 'not running\n'; return 0; }
   pid=${existing% *}
-  if kill -0 "$pid" 2>/dev/null; then
+  port=${existing#* }
+  if running_dashboard_pid "$pid" "$port"; then
     kill "$pid" 2>/dev/null || true
     printf 'stopped: pid %s\n' "$pid"
   else

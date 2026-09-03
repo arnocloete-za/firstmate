@@ -12,9 +12,15 @@
 # Path resolution: data/projects.md has no structured path field (its format is
 # owned by bin/fm-project-mode.sh's header; this script does not touch that
 # parser). A project registered under the default layout lives at
-# $FM_ROOT/projects/<name>. A project registered outside that layout carries its
-# absolute path embedded in its description as the literal phrase
-# "clone kept in place at <ABSOLUTE_PATH>"; this script extracts it from there.
+# $FM_ROOT/projects/<name>. For a project registered outside that layout, this
+# script looks for the literal phrase "clone kept in place at <ABSOLUTE_PATH>"
+# in its description and extracts the path from there if present, falling back
+# to the default layout path otherwise. This phrase is this script's own
+# read-only reading convention, not a contract owned or guaranteed by
+# bin/fm-project-mode.sh or the project-management skill (which documents
+# "Clone into projects/<name>" for every registered project); a captain who
+# wants an out-of-layout project picked up by /dashboard writes this phrase
+# into that project's registry description by hand.
 #
 # Default-branch resolution reuses fm_default_branch() from fm-tangle-lib.sh
 # (prefer origin/HEAD, fall back to a local main/master) rather than
@@ -99,7 +105,9 @@ command -v jq >/dev/null 2>&1 || fail "jq is required"
 
 # resolve_path <name> <description>: print the project's resolved absolute
 # path. Prefers the "clone kept in place at <PATH>" phrase embedded in the
-# registry description; falls back to the default projects/<name> layout.
+# registry description (this script's own reading convention, not a
+# fm-project-mode.sh or project-management-skill contract - see the header
+# comment above); falls back to the default projects/<name> layout.
 resolve_path() {
   local name=$1 desc=$2 embedded
   embedded=$(printf '%s\n' "$desc" \
