@@ -11,7 +11,10 @@ The one addition: a POST to /run with a JSON body {"name": "<project name>"}
 launches that project's registered run script in a local tmux session named
 "dashboard" (created detached if it does not already exist), in a new window
 named after the project with its working directory set to the project's own
-path.
+path. If a window with that name already exists (an earlier run still going,
+or one the captain is watching), Run never kills or replaces it - real work
+in a tmux window is never destroyed from here - it just selects that window
+so it comes to focus, and creates nothing new.
 
 The request body carries only a project name, never a path or command. The
 name is resolved against the fm-dashboard-snapshot.v1 payload embedded in
@@ -96,6 +99,28 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         )
         if has_session.returncode != 0:
             subprocess.run(["tmux", "new-session", "-d", "-s", "dashboard"], check=True)
+        else:
+            # tmux allows more than one window with the same name in a
+            # session - it does not reuse or refuse on a name collision, it
+            # just adds another. Run must never kill or replace a window: it
+            # may be real, currently-running work the captain is watching.
+            # If one with this project's name already exists, just select it
+            # (bring it to focus) and create nothing new.
+            existing = subprocess.run(
+                ["tmux", "list-windows", "-t", "dashboard", "-F", "#{window_name}"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                text=True,
+            )
+            if name in existing.stdout.splitlines():
+                subprocess.run(
+                    ["tmux", "select-window", "-t", "dashboard:%s" % name],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                )
+                return
         subprocess.run(
             ["tmux", "new-window", "-t", "dashboard", "-n", name, "-c", path, run_script],
             check=True,

@@ -79,9 +79,11 @@ branch, then clean) so what needs attention surfaces without scrolling.
 A project with a commit in the last 7 days additionally renders its whole card
 with a light-blue background regardless of its sort position, so work
 currently in progress draws the eye even when it is not otherwise flagged.
-A project's optional voice nickname, when registered, shows next to its
-registry name on the card - free display text only, still sorted and matched
-by the registry name.
+Each card also shows a small badge with its 1-based position in the grid as
+actually drawn (after the worst-first sort), so the captain can say
+"project 3" by voice when a project's name doesn't recognize well; that
+number is display order, not registry order, so it can shift between builds
+if a project's status moves it in the sort.
 A project's "Run" control, when it has a registered run script, is a small,
 plain, distinct button next to the card's clickable head - it never overloads
 that head's own click, which still just opens or closes the commits panel.

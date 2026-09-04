@@ -7,8 +7,8 @@
 # last-commit fields, the bounded commit list, default-branch resolution via
 # both origin/HEAD and the local main/master fallback, the on_default flag,
 # the unavailable-project path for a registry entry whose clone is missing,
-# and the embedded "run script at <PATH>" / "nickname: <text>" phrases
-# (present, absent, and on an unavailable project).
+# and the embedded "run script at <PATH>" phrase (present, absent, and on an
+# unavailable project).
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -73,7 +73,7 @@ for i in $(seq 1 12); do
   commit_file "$MANY" README.md "rev $i" "commit $i" frank
 done
 
-# --- fixture: run script and nickname registered -----------------------
+# --- fixture: run script registered -----------------------
 RUN_SCRIPT="$TMP_ROOT/elsewhere/run-proj-run.sh"
 mkdir -p "$(dirname "$RUN_SCRIPT")"
 printf '#!/usr/bin/env bash\necho ok\n' > "$RUN_SCRIPT"
@@ -81,7 +81,7 @@ RUNNABLE="$FM_ROOT_OVERRIDE/projects/proj-runnable"
 make_repo "$RUNNABLE" main
 commit_file "$RUNNABLE" README.md "hello" "initial" gabe
 
-# --- fixture: neither run script nor nickname registered ----------------
+# --- fixture: no run script registered ----------------
 PLAIN="$FM_ROOT_OVERRIDE/projects/proj-plain"
 make_repo "$PLAIN" main
 commit_file "$PLAIN" README.md "hello" "initial" hana
@@ -96,8 +96,8 @@ cat > "$FM_ROOT_OVERRIDE/data/projects.md" <<EOF
 - proj-origin-head - resolves default branch via origin/HEAD (added 2026-01-01)
 - proj-many-commits - has more commits than the bound (added 2026-01-01)
 - proj-ghost - never cloned (added 2026-01-01)
-- proj-runnable - has a run script and nickname registered; run script at $RUN_SCRIPT; nickname: Run Buddy; (added 2026-01-01)
-- proj-plain - has neither run script nor nickname registered (added 2026-01-01)
+- proj-runnable - has a run script registered; run script at $RUN_SCRIPT (added 2026-01-01)
+- proj-plain - has no run script registered (added 2026-01-01)
 EOF
 
 OUT=$("$SNAPSHOT")
@@ -143,14 +143,14 @@ proj proj-ghost | jq -e '.reason | length > 0' >/dev/null \
   || fail "proj-ghost should carry a reason: $(proj proj-ghost)"
 pass "a registered project with no clone on disk is reported unavailable with a reason"
 
-proj proj-many-commits | jq -e '.commits | length == 8' >/dev/null \
-  || fail "default commit bound should be 8: $(proj proj-many-commits | jq '.commits | length')"
-pass "the default commit-history bound is 8"
+proj proj-many-commits | jq -e '.commits | length == 5' >/dev/null \
+  || fail "default commit bound should be 5: $(proj proj-many-commits | jq '.commits | length')"
+pass "the default commit-history bound is 5"
 
-OUT5=$("$SNAPSHOT" --commits 5)
-echo "$OUT5" | jq -e --arg n proj-many-commits \
-  '(.projects[] | select(.name == $n) | .commits | length) == 5' >/dev/null \
-  || fail "--commits 5 should bound the commit list to 5"
+OUT7=$("$SNAPSHOT" --commits 7)
+echo "$OUT7" | jq -e --arg n proj-many-commits \
+  '(.projects[] | select(.name == $n) | .commits | length) == 7' >/dev/null \
+  || fail "--commits 7 should bound the commit list to 7"
 pass "--commits overrides the default bound within range"
 
 OUT20=$("$SNAPSHOT" --commits 20)
@@ -159,16 +159,16 @@ echo "$OUT20" | jq -e --arg n proj-many-commits \
   || fail "--commits 20 should clamp to 10"
 pass "--commits is clamped to the documented 5-10 range"
 
-proj proj-runnable | jq -e --arg s "$RUN_SCRIPT" '.run_script == $s and .nickname == "Run Buddy"' >/dev/null \
-  || fail "proj-runnable should carry its embedded run_script and nickname: $(proj proj-runnable)"
-pass "the embedded 'run script at <PATH>' and 'nickname: <text>' phrases resolve run_script and nickname"
+proj proj-runnable | jq -e --arg s "$RUN_SCRIPT" '.run_script == $s' >/dev/null \
+  || fail "proj-runnable should carry its embedded run_script: $(proj proj-runnable)"
+pass "the embedded 'run script at <PATH>' phrase resolves run_script"
 
-proj proj-plain | jq -e '.run_script == null and .nickname == null' >/dev/null \
-  || fail "proj-plain should have no run_script or nickname: $(proj proj-plain)"
-pass "a project with neither phrase reports run_script and nickname as null"
+proj proj-plain | jq -e '.run_script == null' >/dev/null \
+  || fail "proj-plain should have no run_script: $(proj proj-plain)"
+pass "a project with no phrase reports run_script as null"
 
-proj proj-ghost | jq -e '.run_script == null and .nickname == null' >/dev/null \
-  || fail "an unavailable project should still carry null run_script/nickname fields: $(proj proj-ghost)"
-pass "an unavailable project still carries the run_script and nickname fields (null when absent)"
+proj proj-ghost | jq -e '.run_script == null' >/dev/null \
+  || fail "an unavailable project should still carry a null run_script field: $(proj proj-ghost)"
+pass "an unavailable project still carries the run_script field (null when absent)"
 
 echo "ALL TESTS PASSED"

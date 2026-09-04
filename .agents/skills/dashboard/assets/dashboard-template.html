@@ -149,11 +149,17 @@ button.card-head:focus-visible {
   font-size: 0.95rem;
   overflow-wrap: anywhere;
 }
-.nickname {
-  font-family: var(--font-sans);
-  font-weight: 400;
-  font-size: 0.78rem;
-  color: var(--text-muted);
+.proj-number {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: 0.7rem;
+  color: var(--text-secondary);
+  background: var(--border);
+  border-radius: 3px;
+  padding: 1px 5px;
+  margin-right: 6px;
+  white-space: nowrap;
 }
 .card-head-row {
   display: flex;
@@ -253,20 +259,29 @@ button.run-btn:focus-visible {
   padding: 0;
 }
 .commits-panel li {
-  display: grid;
-  grid-template-columns: 5.5em 11em 1fr;
-  gap: 10px;
-  padding: 4px 0;
-  font-family: var(--font-mono);
-  font-size: 0.76rem;
+  padding: 6px 0;
   border-bottom: 1px dotted var(--border);
 }
 .commits-panel li:last-child { border-bottom: none; }
+.commits-panel .meta-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-family: var(--font-mono);
+  font-size: 0.76rem;
+}
 .commits-panel .hash { color: var(--text-muted); }
 .commits-panel .date { color: var(--text-secondary); white-space: nowrap; }
-.commits-panel .subject { color: var(--text-primary); font-family: var(--font-sans); overflow-wrap: anywhere; }
+.commits-panel .subject {
+  display: block;
+  margin-top: 2px;
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 0.8rem;
+  overflow-wrap: anywhere;
+}
 .commits-panel .author {
-  grid-column: 1 / 4;
+  display: block;
   color: var(--text-muted);
   font-family: var(--font-sans);
   font-size: 0.72rem;
@@ -357,8 +372,8 @@ __FM_DASHBOARD_DATA__
     return;
   }
 
-  projects.forEach(function (p) {
-    grid.appendChild(renderCard(p));
+  projects.forEach(function (p, i) {
+    grid.appendChild(renderCard(p, i + 1));
   });
 
   function recentClass(p) {
@@ -394,6 +409,12 @@ __FM_DASHBOARD_DATA__
     runBtn.title = 'Run ' + p.name + ' in tmux';
     runBtn.addEventListener('click', function (e) {
       e.stopPropagation();
+      // Disable only for the in-flight request itself, not for a cosmetic
+      // cooldown afterward - a captain clicking Run again shortly after
+      // (e.g. to relaunch after a previous run finished or to restart one
+      // still going) must have that click reach the server, not have the
+      // button silently swallow it while showing a leftover "Started" label.
+      if (runBtn.disabled) return;
       runBtn.disabled = true;
       runBtn.textContent = '...';
       fetch('/run', {
@@ -405,16 +426,16 @@ __FM_DASHBOARD_DATA__
       }).catch(function () {
         runBtn.textContent = 'Failed';
       }).then(function () {
+        runBtn.disabled = false;
         setTimeout(function () {
-          runBtn.textContent = 'Run';
-          runBtn.disabled = false;
-        }, 2000);
+          if (!runBtn.disabled) runBtn.textContent = 'Run';
+        }, 1200);
       });
     });
     return runBtn;
   }
 
-  function renderCard(p) {
+  function renderCard(p, displayNumber) {
     var card = document.createElement('div');
     card.className = 'card' + recentClass(p);
 
@@ -422,13 +443,12 @@ __FM_DASHBOARD_DATA__
     var label = document.createElement('span');
     var name = document.createElement('span');
     name.className = 'proj-name';
-    name.textContent = p.name;
-    if (p.nickname) {
-      var nickSpan = document.createElement('span');
-      nickSpan.className = 'nickname';
-      nickSpan.textContent = ' "' + p.nickname + '"';
-      name.appendChild(nickSpan);
-    }
+    var numberBadge = document.createElement('span');
+    numberBadge.className = 'proj-number';
+    numberBadge.textContent = String(displayNumber);
+    numberBadge.title = 'Say "project ' + displayNumber + '"';
+    name.appendChild(numberBadge);
+    name.appendChild(document.createTextNode(p.name));
 
     if (p.available === false) {
       var head = document.createElement('div');
@@ -503,15 +523,20 @@ __FM_DASHBOARD_DATA__
       authorLine.textContent = c.author || 'unknown';
       li.appendChild(authorLine);
 
+      var metaRow = document.createElement('span');
+      metaRow.className = 'meta-row';
+
       var hash = document.createElement('span');
       hash.className = 'hash';
       hash.textContent = c.hash || '';
-      li.appendChild(hash);
+      metaRow.appendChild(hash);
 
       var date = document.createElement('span');
       date.className = 'date';
       date.textContent = fmtDate(c.date);
-      li.appendChild(date);
+      metaRow.appendChild(date);
+
+      li.appendChild(metaRow);
 
       var subject = document.createElement('span');
       subject.className = 'subject';

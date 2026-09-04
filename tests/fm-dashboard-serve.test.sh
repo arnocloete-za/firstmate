@@ -6,8 +6,10 @@
 # page carries a readable fm-dashboard-snapshot.v1 payload), HTTP
 # reachability of the served content, idempotent reuse of an already-running
 # server across a rebuild, `stop`, and (when tmux is available) the POST
-# /run endpoint's registry-trusted launch and its rejection of an unknown or
-# not-runnable project name.
+# /run endpoint's registry-trusted launch, its rejection of an unknown or
+# not-runnable project name, and that a second /run for the same project
+# selects the existing window instead of duplicating it, silently no-oping,
+# or ever killing/replacing a still-running process.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -57,8 +59,7 @@ cat > "$DATA" <<JSON
       "on_default": true,
       "last_commit": {"date": "2026-01-01T00:00:00Z", "author": "alice", "subject": "init"},
       "commits": [{"hash": "abc1234", "date": "2026-01-01T00:00:00Z", "author": "alice", "subject": "init"}],
-      "run_script": null,
-      "nickname": null
+      "run_script": null
     },
     {
       "name": "runtest",
@@ -70,8 +71,7 @@ cat > "$DATA" <<JSON
       "on_default": true,
       "last_commit": {"date": "2026-01-01T00:00:00Z", "author": "alice", "subject": "init"},
       "commits": [],
-      "run_script": "$TMP_ROOT/runtest.sh",
-      "nickname": "Runnable Test"
+      "run_script": "$TMP_ROOT/runtest.sh"
     }
   ]
 }
@@ -184,6 +184,29 @@ else
   tmux list-windows -t dashboard -F '#{window_name}' 2>/dev/null | grep -qx runtest \
     || fail "no tmux window named after the project was created in the dashboard session"
   pass "/run creates (or reuses) the dashboard tmux session and runs the project's own script there"
+
+  # Clicking Run again while the previous window for the same project is
+  # still alive must not silently do nothing, but it must also never kill or
+  # replace that window - it may be real, currently-running work. It should
+  # select the existing window and leave its process completely untouched.
+  FIRST_RUN_PID=$(tmux list-panes -t dashboard:runtest -F '#{pane_pid}')
+  RUN_CODE2=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$URL3/run" \
+    -H 'Content-Type: application/json' -d '{"name":"runtest"}')
+  [ "$RUN_CODE2" = "200" ] || fail "a second /run for the same project should also succeed, got $RUN_CODE2"
+
+  sleep 0.3
+  SECOND_RUN_PID=$(tmux list-panes -t dashboard:runtest -F '#{pane_pid}' 2>/dev/null)
+  [ "$SECOND_RUN_PID" = "$FIRST_RUN_PID" ] \
+    || fail "a second /run must never kill or replace the existing process, was $FIRST_RUN_PID now $SECOND_RUN_PID"
+  kill -0 "$FIRST_RUN_PID" 2>/dev/null \
+    || fail "the original run_script process should still be alive after a second /run, pid $FIRST_RUN_PID"
+  WINDOW_COUNT=$(tmux list-windows -t dashboard -F '#{window_name}' 2>/dev/null | grep -cx runtest)
+  [ "$WINDOW_COUNT" = "1" ] \
+    || fail "expected exactly one 'runtest' window after a second /run, found $WINDOW_COUNT"
+  ACTIVE_WINDOW=$(tmux list-windows -t dashboard -F '#{window_active} #{window_name}' 2>/dev/null | awk '$1==1{print $2}')
+  [ "$ACTIVE_WINDOW" = "runtest" ] \
+    || fail "a second /run should select the existing window rather than leaving it unfocused, active was $ACTIVE_WINDOW"
+  pass "a second /run for the same project selects the existing window without killing or duplicating it"
 
   run_cleanup
 fi
