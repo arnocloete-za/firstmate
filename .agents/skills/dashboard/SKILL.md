@@ -52,13 +52,9 @@ window named after the project - see step 3.
    `127.0.0.1` - not `lavish-axi` - because this is a regenerate-on-each-run
    status page with no captain feedback loop for a session to poll.
    That server is a plain static file server for every ordinary request, plus
-   one `POST /run` endpoint: given a project name, it resolves that project's
-   `run_script` and path server-side from the registry-sourced snapshot data
-   already embedded in the built page (never from anything the client sends),
-   rejects any name that isn't a registered project with a `run_script`, and
-   otherwise ensures the `dashboard` tmux session exists and opens a new
-   window in it, named after the project, running that script with its
-   working directory set to the project's own path.
+   one `POST /run` endpoint that launches a registered project's own run
+   script in a local `dashboard` tmux session; `bin/fm-dashboard-server.py`'s
+   own header owns that endpoint's exact contract and trust boundary.
    A server already running for this home is reused (rebuilt content is picked
    up on the browser's next request, no restart needed); otherwise a fresh one
    is started on the first free port at or after 4590.
