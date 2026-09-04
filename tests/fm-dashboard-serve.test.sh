@@ -5,7 +5,9 @@
 # Covers schema validation refusal, template-injection round-trip (the built
 # page carries a readable fm-dashboard-snapshot.v1 payload), HTTP
 # reachability of the served content, idempotent reuse of an already-running
-# server across a rebuild, and `stop`.
+# server across a rebuild, `stop`, and (when tmux is available) the POST
+# /run endpoint's registry-trusted launch and its rejection of an unknown or
+# not-runnable project name.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -29,8 +31,18 @@ export FM_DASHBOARD_PORT_BASE=$((20000 + (RANDOM % 5000)))
 cleanup() { "$SERVE" stop >/dev/null 2>&1 || true; fm_test_cleanup; }
 trap cleanup EXIT INT TERM
 
+RUNTEST_DIR="$TMP_ROOT/runtest-proj"
+MARKER="$TMP_ROOT/runtest.marker"
+mkdir -p "$RUNTEST_DIR"
+cat > "$TMP_ROOT/runtest.sh" <<EOF
+#!/usr/bin/env bash
+echo "\$PWD" > "$MARKER"
+sleep 30
+EOF
+chmod +x "$TMP_ROOT/runtest.sh"
+
 DATA="$TMP_ROOT/snapshot.json"
-cat > "$DATA" <<'JSON'
+cat > "$DATA" <<JSON
 {
   "schema": "fm-dashboard-snapshot.v1",
   "generated_at": "2026-01-01T00:00:00Z",
@@ -44,7 +56,22 @@ cat > "$DATA" <<'JSON'
       "default_branch": "main",
       "on_default": true,
       "last_commit": {"date": "2026-01-01T00:00:00Z", "author": "alice", "subject": "init"},
-      "commits": [{"hash": "abc1234", "date": "2026-01-01T00:00:00Z", "author": "alice", "subject": "init"}]
+      "commits": [{"hash": "abc1234", "date": "2026-01-01T00:00:00Z", "author": "alice", "subject": "init"}],
+      "run_script": null,
+      "nickname": null
+    },
+    {
+      "name": "runtest",
+      "path": "$RUNTEST_DIR",
+      "available": true,
+      "clean": true,
+      "branch": "main",
+      "default_branch": "main",
+      "on_default": true,
+      "last_commit": {"date": "2026-01-01T00:00:00Z", "author": "alice", "subject": "init"},
+      "commits": [],
+      "run_script": "$TMP_ROOT/runtest.sh",
+      "nickname": "Runnable Test"
     }
   ]
 }
@@ -110,5 +137,55 @@ pass "stop terminates the server and the state file is cleared"
 STOP_AGAIN=$("$SERVE" stop) || fail "stop should be idempotent when nothing is running"
 echo "$STOP_AGAIN" | grep -q "not running" || fail "stop with no server should report not running: $STOP_AGAIN"
 pass "stop is idempotent when no server is running"
+
+# --- POST /run: launches a registered project's run_script in the shared
+# "dashboard" tmux session. That session name is fixed by design (the
+# captain reuses one persistent session), so this test must never destroy a
+# session that was already there for another reason - only a window it adds
+# itself.
+if ! command -v tmux >/dev/null 2>&1; then
+  echo "skip: tmux not found, /run coverage skipped"
+else
+  HAD_SESSION=0
+  tmux has-session -t dashboard 2>/dev/null && HAD_SESSION=1
+  run_cleanup() {
+    tmux kill-window -t dashboard:runtest >/dev/null 2>&1 || true
+    if [ "$HAD_SESSION" -eq 0 ]; then
+      tmux kill-session -t dashboard >/dev/null 2>&1 || true
+    fi
+  }
+  trap 'run_cleanup; cleanup' EXIT INT TERM
+
+  OUT3=$("$SERVE" build "$DATA") || fail "build for /run coverage failed: $OUT3"
+  URL3=$(echo "$OUT3" | sed -n 's/^served: //p')
+
+  BAD_NAME_CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$URL3/run" \
+    -H 'Content-Type: application/json' -d '{"name":"not-a-real-project"}')
+  [ "$BAD_NAME_CODE" = "400" ] || fail "/run should reject an unknown project name, got $BAD_NAME_CODE"
+  pass "/run rejects a project name that is not a known registered project"
+
+  NO_SCRIPT_CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$URL3/run" \
+    -H 'Content-Type: application/json' -d '{"name":"demo"}')
+  [ "$NO_SCRIPT_CODE" = "400" ] || fail "/run should reject a project with no run_script, got $NO_SCRIPT_CODE"
+  pass "/run rejects a registered project that has no run_script"
+
+  RUN_CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$URL3/run" \
+    -H 'Content-Type: application/json' -d '{"name":"runtest"}')
+  [ "$RUN_CODE" = "200" ] || fail "/run should accept a project with a registered run_script, got $RUN_CODE"
+
+  waited=0
+  while [ ! -f "$MARKER" ] && [ "$waited" -lt 50 ]; do
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  [ -f "$MARKER" ] || fail "/run did not actually launch the project's run_script (no marker file)"
+  [ "$(cat "$MARKER")" = "$RUNTEST_DIR" ] \
+    || fail "run_script ran with the wrong working directory: $(cat "$MARKER")"
+  tmux list-windows -t dashboard -F '#{window_name}' 2>/dev/null | grep -qx runtest \
+    || fail "no tmux window named after the project was created in the dashboard session"
+  pass "/run creates (or reuses) the dashboard tmux session and runs the project's own script there"
+
+  run_cleanup
+fi
 
 echo "ALL TESTS PASSED"

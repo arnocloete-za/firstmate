@@ -149,6 +149,42 @@ button.card-head:focus-visible {
   font-size: 0.95rem;
   overflow-wrap: anywhere;
 }
+.nickname {
+  font-family: var(--font-sans);
+  font-weight: 400;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+.card-head-row {
+  display: flex;
+  align-items: stretch;
+}
+.card-head-row .card-head {
+  flex: 1;
+  min-width: 0;
+}
+button.run-btn {
+  all: unset;
+  box-sizing: border-box;
+  cursor: pointer;
+  align-self: center;
+  margin: 0 14px 0 0;
+  padding: 4px 10px;
+  font-family: var(--font-sans);
+  font-size: 0.76rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  background: var(--bg-raised);
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  white-space: nowrap;
+}
+button.run-btn:hover { color: var(--text-primary); }
+button.run-btn:disabled { cursor: default; opacity: 0.6; }
+button.run-btn:focus-visible {
+  outline: 2px solid var(--text-primary);
+  outline-offset: 1px;
+}
 .status-label {
   grid-column: 3;
   grid-row: 1;
@@ -334,6 +370,50 @@ __FM_DASHBOARD_DATA__
     return p.last_commit.mine ? ' recent-mine' : ' recent-team';
   }
 
+  // headRowWith(headEl, p): wrap the card-head element (a button for an
+  // available project, a plain div for an unavailable one) together with a
+  // "Run" button when the project has a registered run_script. The run
+  // button is a sibling, distinct clickable element - never nested inside
+  // headEl - so it never triggers headEl's own click behavior (the
+  // commits-panel toggle for an available project).
+  function headRowWith(headEl, p) {
+    var row = document.createElement('div');
+    row.className = 'card-head-row';
+    row.appendChild(headEl);
+    if (p.run_script) {
+      row.appendChild(runButtonFor(p));
+    }
+    return row;
+  }
+
+  function runButtonFor(p) {
+    var runBtn = document.createElement('button');
+    runBtn.type = 'button';
+    runBtn.className = 'run-btn';
+    runBtn.textContent = 'Run';
+    runBtn.title = 'Run ' + p.name + ' in tmux';
+    runBtn.addEventListener('click', function (e) {
+      e.stopPropagation();
+      runBtn.disabled = true;
+      runBtn.textContent = '...';
+      fetch('/run', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({name: p.name})
+      }).then(function (res) {
+        runBtn.textContent = res.ok ? 'Started' : 'Failed';
+      }).catch(function () {
+        runBtn.textContent = 'Failed';
+      }).then(function () {
+        setTimeout(function () {
+          runBtn.textContent = 'Run';
+          runBtn.disabled = false;
+        }, 2000);
+      });
+    });
+    return runBtn;
+  }
+
   function renderCard(p) {
     var card = document.createElement('div');
     card.className = 'card' + recentClass(p);
@@ -343,6 +423,12 @@ __FM_DASHBOARD_DATA__
     var name = document.createElement('span');
     name.className = 'proj-name';
     name.textContent = p.name;
+    if (p.nickname) {
+      var nickSpan = document.createElement('span');
+      nickSpan.className = 'nickname';
+      nickSpan.textContent = ' "' + p.nickname + '"';
+      name.appendChild(nickSpan);
+    }
 
     if (p.available === false) {
       var head = document.createElement('div');
@@ -360,7 +446,7 @@ __FM_DASHBOARD_DATA__
       reason.textContent = p.reason || 'clone not found';
       head.appendChild(reason);
 
-      card.appendChild(head);
+      card.appendChild(headRowWith(head, p));
       return card;
     }
 
@@ -404,7 +490,7 @@ __FM_DASHBOARD_DATA__
       var isOpen = card.classList.toggle('open');
       button.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
     });
-    card.appendChild(button);
+    card.appendChild(headRowWith(button, p));
 
     var panel = document.createElement('div');
     panel.className = 'commits-panel';

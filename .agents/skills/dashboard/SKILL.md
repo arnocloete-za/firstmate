@@ -16,9 +16,14 @@ metadata:
 `/dashboard` is for launch: a quick bearings check plus a visual board of every
 registered project's git health, so the captain can see what needs attention in
 one glance.
-It is operationally read-only apart from the ordinary bearings side effects and
-the dashboard's own generated files under `$FM_HOME/.dashboard/`; it never
-fetches, pulls, commits, or otherwise mutates a project checkout.
+It is operationally read-only toward every project checkout, apart from the
+ordinary bearings side effects and the dashboard's own generated files under
+`$FM_HOME/.dashboard/`; it never fetches, pulls, commits, or otherwise mutates
+a checkout.
+The one exception is launching: clicking a project card's "Run" control, when
+that project has a registered run script, starts that script in a local tmux
+session named `dashboard` (created if it does not already exist), in a new
+window named after the project - see step 3.
 
 ## What it does
 
@@ -42,10 +47,18 @@ fetches, pulls, commits, or otherwise mutates a project checkout.
    Run `bin/fm-dashboard-serve.sh build <tmp>.json`.
    It injects the snapshot into the shipped template
    (`assets/dashboard-template.html`) at the stable path
-   `$FM_HOME/.dashboard/index.html`, and serves that directory with a plain
-   local static HTTP server bound to `127.0.0.1` - not `lavish-axi` - because
-   this is a read-only, regenerate-on-each-run status page with no captain
-   feedback loop for a session to poll.
+   `$FM_HOME/.dashboard/index.html`, and serves that directory with a small
+   local HTTP server (`bin/fm-dashboard-server.py`, stdlib-only) bound to
+   `127.0.0.1` - not `lavish-axi` - because this is a regenerate-on-each-run
+   status page with no captain feedback loop for a session to poll.
+   That server is a plain static file server for every ordinary request, plus
+   one `POST /run` endpoint: given a project name, it resolves that project's
+   `run_script` and path server-side from the registry-sourced snapshot data
+   already embedded in the built page (never from anything the client sends),
+   rejects any name that isn't a registered project with a `run_script`, and
+   otherwise ensures the `dashboard` tmux session exists and opens a new
+   window in it, named after the project, running that script with its
+   working directory set to the project's own path.
    A server already running for this home is reused (rebuilt content is picked
    up on the browser's next request, no restart needed); otherwise a fresh one
    is started on the first free port at or after 4590.
@@ -70,6 +83,12 @@ branch, then clean) so what needs attention surfaces without scrolling.
 A project with a commit in the last 7 days additionally renders its whole card
 with a light-blue background regardless of its sort position, so work
 currently in progress draws the eye even when it is not otherwise flagged.
+A project's optional voice nickname, when registered, shows next to its
+registry name on the card - free display text only, still sorted and matched
+by the registry name.
+A project's "Run" control, when it has a registered run script, is a small,
+plain, distinct button next to the card's clickable head - it never overloads
+that head's own click, which still just opens or closes the commits panel.
 Do not restyle it toward the nautical/warm-paper design system without an
 explicit captain request to do so.
 

@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
 # fm-dashboard-serve.sh - build and serve the /dashboard project-status board.
 #
-# The dashboard is a read-only, regenerate-on-each-run status page: no captain
-# feedback loop, so it is served with a plain local static HTTP server
-# (python3 -m http.server) rather than a lavish-axi session - there is nothing
-# for a Lavish session's answer-binding machinery to do here.
+# The dashboard is a regenerate-on-each-run status page with no captain
+# feedback loop, so it is served with a plain local HTTP server
+# (bin/fm-dashboard-server.py, stdlib-only) rather than a lavish-axi session -
+# there is nothing for a Lavish session's answer-binding machinery to do here.
+# That server is a static file server for every GET/HEAD request, plus one
+# POST /run endpoint that launches a registered project's own run script in a
+# local tmux session; bin/fm-dashboard-server.py's own header owns that
+# contract.
 #
 # Usage:
 #   fm-dashboard-serve.sh build <data.json>
@@ -40,6 +44,7 @@ FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 
 TEMPLATE="${FM_DASHBOARD_TEMPLATE:-$SCRIPT_DIR/../.agents/skills/dashboard/assets/dashboard-template.html}"
+SERVER_SCRIPT="$SCRIPT_DIR/fm-dashboard-server.py"
 PLACEHOLDER='__FM_DASHBOARD_DATA__'
 DASHBOARD_SCHEMA=fm-dashboard-snapshot.v1
 PORT_BASE="${FM_DASHBOARD_PORT_BASE:-4590}"
@@ -95,16 +100,16 @@ find_free_port() {  # <base>
 }
 
 # running_dashboard_pid <pid> <port>: true if <pid> is alive and looks like
-# the http.server we launched for <port> (best-effort cmdline check; Linux
-# /proc only, since a stale/foreign pid on that number is otherwise harmless -
-# it just costs one extra port scan).
+# the fm-dashboard-server.py we launched for <port> (best-effort cmdline
+# check; Linux /proc only, since a stale/foreign pid on that number is
+# otherwise harmless - it just costs one extra port scan).
 running_dashboard_pid() {
   local pid=$1 port=$2 cmdline
   kill -0 "$pid" 2>/dev/null || return 1
   if [ -r "/proc/$pid/cmdline" ]; then
     cmdline=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)
     case "$cmdline" in
-      *http.server*"$port"*) return 0 ;;
+      *fm-dashboard-server.py*"$port"*) return 0 ;;
       *) return 1 ;;
     esac
   fi
@@ -144,7 +149,7 @@ start_server() {  # <dir> -> prints port
   port=$(find_free_port "$PORT_BASE")
   case $- in *m*) monitor_was_on=1 ;; esac
   set -m 2>/dev/null || true
-  nohup python3 -m http.server "$port" --bind 127.0.0.1 --directory "$dir" \
+  nohup python3 "$SERVER_SCRIPT" "$port" "$dir" \
     >/dev/null 2>&1 </dev/null &
   worker_pid=$!
   [ "$monitor_was_on" -eq 1 ] || set +m 2>/dev/null || true
@@ -168,6 +173,7 @@ command_build() {
   [ "$#" -eq 1 ] || { usage >&2; exit 2; }
   command -v jq >/dev/null 2>&1 || fail "jq is required"
   command -v python3 >/dev/null 2>&1 || fail "python3 is required"
+  [ -f "$SERVER_SCRIPT" ] || fail "dashboard server script is missing: $SERVER_SCRIPT"
   [ -f "$data" ] || fail "dashboard data does not exist: $data"
   jq empty "$data" 2>/dev/null || fail "dashboard data is not valid JSON: $data"
   validate_payload "$data" || fail "dashboard data does not satisfy $DASHBOARD_SCHEMA: $data"

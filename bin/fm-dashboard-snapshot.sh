@@ -22,6 +22,16 @@
 # wants an out-of-layout project picked up by /dashboard writes this phrase
 # into that project's registry description by hand.
 #
+# Two more optional phrases in the same description use the same reading
+# convention, each captured up to the next ";" or end of line:
+#   "run script at <ABSOLUTE_PATH>" - a local script that runs this project;
+#     when present, the /dashboard page offers a "Run" control that launches
+#     it (bin/fm-dashboard-server.py owns the launch mechanics). Absent for
+#     most projects.
+#   "nickname: <short name>" - a short, easy-to-say voice nickname shown on
+#     the dashboard card in place of an awkward registry name. Absent for
+#     most projects.
+#
 # Default-branch resolution reuses fm_default_branch() from fm-tangle-lib.sh
 # (prefer origin/HEAD, fall back to a local main/master) rather than
 # reimplementing that logic.
@@ -54,11 +64,16 @@
 #         "default_branch": "<resolved default branch>",
 #         "on_default": true|false,
 #         "last_commit": {"date": "...", "author": "...", "author_email": "...", "mine": true|false, "subject": "..."},
-#         "commits": [{"hash": "...", "date": "...", "author": "...", "subject": "..."}, ...]
+#         "commits": [{"hash": "...", "date": "...", "author": "...", "subject": "..."}, ...],
+#         "run_script": "<ABSOLUTE_PATH>" | null,
+#         "nickname": "<short name>" | null
 #       },
 #       ...
 #     ]
 #   }
+# run_script and nickname are present (possibly null) on every project record,
+# available or not, since both come from the registry description rather than
+# the clone itself.
 #
 # Usage:
 #   fm-dashboard-snapshot.sh [--commits N]
@@ -169,15 +184,37 @@ resolve_path() {
   fi
 }
 
-# project_json <name> <path>: emit one fm-dashboard-snapshot.v1 project record.
+# resolve_run_script <description>: print the embedded "run script at <PATH>"
+# phrase's path, or nothing when absent. See the header comment above.
+resolve_run_script() {
+  printf '%s\n' "$1" \
+    | grep -oE 'run script at [^ ;]+' \
+    | head -n1 \
+    | sed 's/^run script at //'
+}
+
+# resolve_nickname <description>: print the embedded "nickname: <text>"
+# phrase's text (up to the next ";" or end of line), or nothing when absent.
+resolve_nickname() {
+  printf '%s\n' "$1" \
+    | grep -oE 'nickname: [^;]+' \
+    | head -n1 \
+    | sed 's/^nickname: //; s/[[:space:]]*$//'
+}
+
+# project_json <name> <path> <run_script> <nickname>: emit one
+# fm-dashboard-snapshot.v1 project record.
 project_json() {
-  local name=$1 path=$2
+  local name=$1 path=$2 run_script=$3 nickname=$4
   local branch default_branch on_default clean_bool last_line last_date last_author last_email last_subject last_mine
   local commits_raw commits_json
 
   if [ ! -d "$path" ] || ! git -C "$path" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     jq -n --arg name "$name" --arg path "$path" \
-      '{name: $name, path: $path, available: false, reason: "no git checkout at this path"}'
+      --arg run_script "$run_script" --arg nickname "$nickname" \
+      '{name: $name, path: $path, available: false, reason: "no git checkout at this path",
+        run_script: (if $run_script == "" then null else $run_script end),
+        nickname: (if $nickname == "" then null else $nickname end)}'
     return 0
   fi
 
@@ -237,6 +274,8 @@ project_json() {
     --argjson last_mine "$last_mine" \
     --arg last_subject "$last_subject" \
     --argjson commits "$commits_json" \
+    --arg run_script "$run_script" \
+    --arg nickname "$nickname" \
     '{
       name: $name, path: $path, available: true,
       clean: $clean,
@@ -244,7 +283,9 @@ project_json() {
       default_branch: (if $default_branch == "" then null else $default_branch end),
       on_default: $on_default,
       last_commit: {date: $last_date, author: $last_author, author_email: $last_email, mine: $last_mine, subject: $last_subject},
-      commits: $commits
+      commits: $commits,
+      run_script: (if $run_script == "" then null else $run_script end),
+      nickname: (if $nickname == "" then null else $nickname end)
     }'
 }
 
@@ -263,7 +304,9 @@ while IFS= read -r line; do
   name=$(printf '%s\n' "$line" | awk '{print $2}')
   [ -n "$name" ] || continue
   path=$(resolve_path "$name" "$line")
-  records+=("$(project_json "$name" "$path")")
+  run_script=$(resolve_run_script "$line")
+  nickname=$(resolve_nickname "$line")
+  records+=("$(project_json "$name" "$path" "$run_script" "$nickname")")
 done < "$REG"
 
 if [ "${#records[@]}" -eq 0 ]; then

@@ -6,8 +6,9 @@
 # "clone kept in place at <PATH>" registry phrase), clean/dirty detection,
 # last-commit fields, the bounded commit list, default-branch resolution via
 # both origin/HEAD and the local main/master fallback, the on_default flag,
-# and the unavailable-project path for a registry entry whose clone is
-# missing.
+# the unavailable-project path for a registry entry whose clone is missing,
+# and the embedded "run script at <PATH>" / "nickname: <text>" phrases
+# (present, absent, and on an unavailable project).
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -72,6 +73,19 @@ for i in $(seq 1 12); do
   commit_file "$MANY" README.md "rev $i" "commit $i" frank
 done
 
+# --- fixture: run script and nickname registered -----------------------
+RUN_SCRIPT="$TMP_ROOT/elsewhere/run-proj-run.sh"
+mkdir -p "$(dirname "$RUN_SCRIPT")"
+printf '#!/usr/bin/env bash\necho ok\n' > "$RUN_SCRIPT"
+RUNNABLE="$FM_ROOT_OVERRIDE/projects/proj-runnable"
+make_repo "$RUNNABLE" main
+commit_file "$RUNNABLE" README.md "hello" "initial" gabe
+
+# --- fixture: neither run script nor nickname registered ----------------
+PLAIN="$FM_ROOT_OVERRIDE/projects/proj-plain"
+make_repo "$PLAIN" main
+commit_file "$PLAIN" README.md "hello" "initial" hana
+
 cat > "$FM_ROOT_OVERRIDE/data/projects.md" <<EOF
 # Projects
 
@@ -82,13 +96,15 @@ cat > "$FM_ROOT_OVERRIDE/data/projects.md" <<EOF
 - proj-origin-head - resolves default branch via origin/HEAD (added 2026-01-01)
 - proj-many-commits - has more commits than the bound (added 2026-01-01)
 - proj-ghost - never cloned (added 2026-01-01)
+- proj-runnable - has a run script and nickname registered; run script at $RUN_SCRIPT; nickname: Run Buddy; (added 2026-01-01)
+- proj-plain - has neither run script nor nickname registered (added 2026-01-01)
 EOF
 
 OUT=$("$SNAPSHOT")
 echo "$OUT" | jq -e '.schema == "fm-dashboard-snapshot.v1"' >/dev/null \
   || fail "wrong schema tag: $OUT"
-echo "$OUT" | jq -e '.projects | length == 7' >/dev/null \
-  || fail "expected 7 projects, got: $(echo "$OUT" | jq '.projects | length')"
+echo "$OUT" | jq -e '.projects | length == 9' >/dev/null \
+  || fail "expected 9 projects, got: $(echo "$OUT" | jq '.projects | length')"
 pass "snapshot carries the fm-dashboard-snapshot.v1 schema and every registered project"
 
 proj() {  # <name> -> that project's JSON object
@@ -142,5 +158,17 @@ echo "$OUT20" | jq -e --arg n proj-many-commits \
   '(.projects[] | select(.name == $n) | .commits | length) == 10' >/dev/null \
   || fail "--commits 20 should clamp to 10"
 pass "--commits is clamped to the documented 5-10 range"
+
+proj proj-runnable | jq -e --arg s "$RUN_SCRIPT" '.run_script == $s and .nickname == "Run Buddy"' >/dev/null \
+  || fail "proj-runnable should carry its embedded run_script and nickname: $(proj proj-runnable)"
+pass "the embedded 'run script at <PATH>' and 'nickname: <text>' phrases resolve run_script and nickname"
+
+proj proj-plain | jq -e '.run_script == null and .nickname == null' >/dev/null \
+  || fail "proj-plain should have no run_script or nickname: $(proj proj-plain)"
+pass "a project with neither phrase reports run_script and nickname as null"
+
+proj proj-ghost | jq -e '.run_script == null and .nickname == null' >/dev/null \
+  || fail "an unavailable project should still carry null run_script/nickname fields: $(proj proj-ghost)"
+pass "an unavailable project still carries the run_script and nickname fields (null when absent)"
 
 echo "ALL TESTS PASSED"
