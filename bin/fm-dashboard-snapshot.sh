@@ -26,6 +26,18 @@
 # (prefer origin/HEAD, fall back to a local main/master) rather than
 # reimplementing that logic.
 #
+# "mine" detection: last_commit.mine says whether the captain's own identity
+# authored the last commit, so the dashboard can tell "I'm working on this"
+# apart from "a teammate is working on this". The captain's identity is
+# resolved fresh each run, never hardcoded: each project's effective
+# `git config user.email` (local override or global fallback), plus, when
+# `gh` is authenticated, that GitHub account's noreply-email forms
+# (`<login>@users.noreply.github.com` and `<id>+<login>@users.noreply.github.com`,
+# the address GitHub attributes to web-authored and merge commits). The `gh
+# api user` lookup is a read-only network call, consistent with this script's
+# operationally-read-only contract. If no identity resolves at all, every
+# commit reads as not-mine rather than guessing.
+#
 # Output contract: fm-dashboard-snapshot.v1, a single compact JSON object on
 # stdout:
 #   {
@@ -41,7 +53,7 @@
 #         "branch": "<current branch or short HEAD if detached>",
 #         "default_branch": "<resolved default branch>",
 #         "on_default": true|false,
-#         "last_commit": {"date": "...", "author": "...", "subject": "..."},
+#         "last_commit": {"date": "...", "author": "...", "author_email": "...", "mine": true|false, "subject": "..."},
 #         "commits": [{"hash": "...", "date": "...", "author": "...", "subject": "..."}, ...]
 #       },
 #       ...
@@ -103,6 +115,42 @@ esac
 
 command -v jq >/dev/null 2>&1 || fail "jq is required"
 
+# captain_identity_emails: print the captain's known git/GitHub identity
+# emails, one per line, lowercased. Resolved fresh each run - see the
+# "mine" detection header note.
+captain_identity_emails() {
+  local e login id
+  e=$(git config --global user.email 2>/dev/null || true)
+  [ -n "$e" ] && printf '%s\n' "$e"
+
+  if command -v gh >/dev/null 2>&1; then
+    login=$(gh api user --jq '.login // empty' 2>/dev/null || true)
+    id=$(gh api user --jq '.id // empty' 2>/dev/null || true)
+    if [ -n "$login" ]; then
+      printf '%s\n' "${login}@users.noreply.github.com"
+      [ -n "$id" ] && printf '%s\n' "${id}+${login}@users.noreply.github.com"
+    fi
+  fi
+}
+CAPTAIN_EMAILS=$(captain_identity_emails | tr '[:upper:]' '[:lower:]' | sort -u)
+
+# is_mine_email <path> <author_email>: true if author_email matches the
+# captain's global/GitHub identity or this project's own effective git
+# identity (local config override, or its own global fallback).
+is_mine_email() {
+  local path=$1 author_email=$2 proj_email candidate
+  [ -n "$author_email" ] || { return 1; }
+  author_email=$(printf '%s' "$author_email" | tr '[:upper:]' '[:lower:]')
+  proj_email=$(git -C "$path" config user.email 2>/dev/null | tr '[:upper:]' '[:lower:]' || true)
+  [ -n "$proj_email" ] && [ "$proj_email" = "$author_email" ] && return 0
+  while IFS= read -r candidate; do
+    [ -n "$candidate" ] && [ "$candidate" = "$author_email" ] && return 0
+  done <<EOF
+$CAPTAIN_EMAILS
+EOF
+  return 1
+}
+
 # resolve_path <name> <description>: print the project's resolved absolute
 # path. Prefers the "clone kept in place at <PATH>" phrase embedded in the
 # registry description (this script's own reading convention, not a
@@ -124,7 +172,7 @@ resolve_path() {
 # project_json <name> <path>: emit one fm-dashboard-snapshot.v1 project record.
 project_json() {
   local name=$1 path=$2
-  local branch default_branch on_default clean_bool last_line last_date last_author last_subject
+  local branch default_branch on_default clean_bool last_line last_date last_author last_email last_subject last_mine
   local commits_raw commits_json
 
   if [ ! -d "$path" ] || ! git -C "$path" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
@@ -154,13 +202,20 @@ project_json() {
     on_default=false
   fi
 
-  last_line=$(git -C "$path" log -1 --format='%ad%x1f%an%x1f%s' --date=iso-strict 2>/dev/null || true)
+  last_line=$(git -C "$path" log -1 --format='%ad%x1f%an%x1f%ae%x1f%s' --date=iso-strict 2>/dev/null || true)
   last_date=${last_line%%$'\x1f'*}
   last_line=${last_line#*$'\x1f'}
   last_author=${last_line%%$'\x1f'*}
+  last_line=${last_line#*$'\x1f'}
+  last_email=${last_line%%$'\x1f'*}
   last_subject=${last_line#*$'\x1f'}
   if [ -z "$last_date" ]; then
-    last_date=""; last_author=""; last_subject=""
+    last_date=""; last_author=""; last_email=""; last_subject=""
+  fi
+  if [ -n "$last_email" ] && is_mine_email "$path" "$last_email"; then
+    last_mine=true
+  else
+    last_mine=false
   fi
 
   commits_raw=$(git -C "$path" log -n "$COMMIT_LIMIT" --format='%h%x1f%ad%x1f%an%x1f%s' --date=iso-strict 2>/dev/null || true)
@@ -178,6 +233,8 @@ project_json() {
     --argjson on_default "$on_default" \
     --arg last_date "$last_date" \
     --arg last_author "$last_author" \
+    --arg last_email "$last_email" \
+    --argjson last_mine "$last_mine" \
     --arg last_subject "$last_subject" \
     --argjson commits "$commits_json" \
     '{
@@ -186,7 +243,7 @@ project_json() {
       branch: $branch,
       default_branch: (if $default_branch == "" then null else $default_branch end),
       on_default: $on_default,
-      last_commit: {date: $last_date, author: $last_author, subject: $last_subject},
+      last_commit: {date: $last_date, author: $last_author, author_email: $last_email, mine: $last_mine, subject: $last_subject},
       commits: $commits
     }'
 }

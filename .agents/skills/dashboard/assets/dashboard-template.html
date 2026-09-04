@@ -26,6 +26,10 @@
   --critical-soft: #fbe8e8;
   --warning:      #a8710a;
   --warning-soft: #fbeed2;
+  --recent-mine-bg:     #e2f0ff;
+  --recent-mine-border: #8fbdf0;
+  --recent-team-bg:     #fce8d3;
+  --recent-team-border: #e3ab68;
   --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
 }
@@ -46,6 +50,10 @@
     --critical-soft: #3a1414;
     --warning:      #d9a441;
     --warning-soft: #362a10;
+    --recent-mine-bg:     #16283d;
+    --recent-mine-border: #4a83c4;
+    --recent-team-bg:     #3a2a10;
+    --recent-team-border: #b8802f;
   }
 }
 * { box-sizing: border-box; }
@@ -109,6 +117,8 @@ header.page-head h1 {
   overflow: hidden;
 }
 .card.open { border-color: var(--border-strong); }
+.card.recent-mine { background: var(--recent-mine-bg); border-color: var(--recent-mine-border); }
+.card.recent-team { background: var(--recent-team-bg); border-color: var(--recent-team-border); }
 button.card-head {
   all: unset;
   box-sizing: border-box;
@@ -131,7 +141,7 @@ button.card-head:focus-visible {
   grid-row: 1 / 3;
 }
 .status-dot.clean { background: var(--good); }
-.status-dot.dirty { background: var(--critical); }
+.status-dot.uncommitted { background: var(--critical); }
 .status-dot.unknown { background: var(--text-muted); }
 .proj-name {
   font-family: var(--font-mono);
@@ -151,7 +161,7 @@ button.card-head:focus-visible {
   white-space: nowrap;
 }
 .status-label.clean { color: var(--good); background: var(--good-soft); }
-.status-label.dirty { color: var(--critical); background: var(--critical-soft); }
+.status-label.uncommitted { color: var(--critical); background: var(--critical-soft); }
 .status-label.unknown { color: var(--text-muted); background: var(--border); }
 .branch-row {
   grid-column: 2 / 4;
@@ -271,16 +281,16 @@ __FM_DASHBOARD_DATA__
     return attentionScore(b) - attentionScore(a);
   });
 
-  var clean = 0, dirty = 0, offDefault = 0, unavailable = 0;
+  var clean = 0, uncommitted = 0, offDefault = 0, unavailable = 0;
   projects.forEach(function (p) {
     if (p.available === false) { unavailable++; return; }
-    if (p.clean) clean++; else dirty++;
+    if (p.clean) clean++; else uncommitted++;
     if (p.on_default === false) offDefault++;
   });
 
   var summaryEl = document.getElementById('summary');
   summaryEl.appendChild(strongify(projects.length + ' project' + (projects.length === 1 ? '' : 's'), 'clean'));
-  summaryEl.appendChild(strongify(dirty + ' dirty', 'dirty'));
+  summaryEl.appendChild(strongify(uncommitted + ' uncommitted', 'uncommitted'));
   summaryEl.appendChild(strongify(clean + ' clean', 'clean'));
   summaryEl.appendChild(strongify(offDefault + ' off default branch', 'unknown'));
   if (unavailable > 0) {
@@ -315,9 +325,18 @@ __FM_DASHBOARD_DATA__
     grid.appendChild(renderCard(p));
   });
 
+  function recentClass(p) {
+    if (!p.last_commit || !p.last_commit.date) return '';
+    var d = new Date(p.last_commit.date);
+    if (isNaN(d.getTime())) return '';
+    var days = (Date.now() - d.getTime()) / (24 * 60 * 60 * 1000);
+    if (days < 0 || days > 7) return '';
+    return p.last_commit.mine ? ' recent-mine' : ' recent-team';
+  }
+
   function renderCard(p) {
     var card = document.createElement('div');
-    card.className = 'card';
+    card.className = 'card' + recentClass(p);
 
     var dot = document.createElement('span');
     var label = document.createElement('span');
@@ -351,9 +370,9 @@ __FM_DASHBOARD_DATA__
     button.setAttribute('aria-expanded', 'false');
     button.appendChild(name);
 
-    dot.className = 'status-dot ' + (p.clean ? 'clean' : 'dirty');
-    label.className = 'status-label ' + (p.clean ? 'clean' : 'dirty');
-    label.textContent = p.clean ? 'clean' : 'dirty';
+    dot.className = 'status-dot ' + (p.clean ? 'clean' : 'uncommitted');
+    label.className = 'status-label ' + (p.clean ? 'clean' : 'uncommitted');
+    label.textContent = p.clean ? 'clean' : 'uncommitted';
     button.appendChild(dot);
     button.appendChild(label);
 

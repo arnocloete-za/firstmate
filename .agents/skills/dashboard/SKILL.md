@@ -56,17 +56,20 @@ fetches, pulls, commits, or otherwise mutates a project checkout.
    3, in the same reply.
    Do not describe the dashboard's internal file paths, the server process, or
    the port-selection mechanics; just the URL and what it shows (project health
-   at a glance - clean/dirty, branch, last commit).
+   at a glance - clean/uncommitted, branch, last commit).
 
 ## Design intent
 
 The dashboard is deliberately plain "internal tool" styling per the captain's
 own instruction, not the warm nautical chrome used for captain-facing
 surfaces like the bearings board: a status grid, restrained color reserved for
-the clean/dirty and off-default-branch signals, monospace where it helps
+the clean/uncommitted and off-default-branch signals, monospace where it helps
 scanning.
-Projects are sorted worst-first (unavailable, then dirty, then off-default
+Projects are sorted worst-first (unavailable, then uncommitted, then off-default
 branch, then clean) so what needs attention surfaces without scrolling.
+A project with a commit in the last 7 days additionally renders its whole card
+with a light-blue background regardless of its sort position, so work
+currently in progress draws the eye even when it is not otherwise flagged.
 Do not restyle it toward the nautical/warm-paper design system without an
 explicit captain request to do so.
 
@@ -74,7 +77,7 @@ explicit captain request to do so.
 
 A project the snapshot marks `available: false` (its resolved clone path
 does not exist, or is not a git checkout) renders as a distinct muted card
-with the reason, sorted to the front alongside dirty projects - it is a
+with the reason, sorted to the front alongside uncommitted projects - it is a
 signal that registry state needs attention, not silently dropped.
 This is expected for a stale or not-yet-cloned registry entry; do not treat it
 as a script failure.
