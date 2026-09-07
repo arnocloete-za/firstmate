@@ -12,6 +12,7 @@
 # sections when the task genuinely deviates (e.g. working an existing external
 # PR instead of shipping a new one).
 # Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|local-only> [--herdr-lab]
+#        fm-brief.sh <task-id> <repo-name> --mode project-branch --branch <batch-branch> [--herdr-lab]
 #        fm-brief.sh <task-id> <repo-name> --scout [--herdr-lab]
 #        fm-brief.sh <task-id> --secondmate {<project>...|--no-projects}
 #   --scout writes the scout contract instead: the deliverable is a report at
@@ -40,13 +41,26 @@
 #   direct-PR    implement -> push + open PR via gh-axi (no pipeline) -> configured merge authority
 #   local-only   implement on branch, stop and report "ready in branch" (no push/PR);
 #                the configured merge authority approves, firstmate merges to local main
+#   project-branch  implement in the project's OWN registered directory, on a batch
+#                branch the captain owns. The worker announces the branch, builds,
+#                bumps the version, runs the review pipeline with push/PR/CI skipped,
+#                then stops at "ready for a pull request" - a green pipeline never
+#                opens one. Only his relayed word releases the PR run.
+#                Requires --branch and refuses without it.
 # no-mistakes-prod-only is a registry policy, not a task mode; resolve it to one of
-# the three concrete modes at intake before calling this script.
+# the four concrete modes at intake before calling this script.
+# --branch <batch-branch> is REQUIRED by (and accepted only for) --mode project-branch.
+# The branch belongs to a batch of work rather than to this task, so nothing here or
+# in the generated brief ever derives it from the task id.
 # The generated ship brief records the chosen mode as a fixed machine-readable
-# "Delivery contract: mode=<mode>" line. bin/fm-spawn.sh reads that line and refuses
-# to launch a ship task whose explicit --mode disagrees, so an adjusted brief and the
+# "Delivery contract: mode=<mode>" line (project-branch extends it with
+# " branch=<batch-branch>"). bin/fm-spawn.sh reads that line and refuses to launch a
+# ship task whose explicit --mode or --branch disagrees, so an adjusted brief and the
 # recorded task metadata cannot drift apart.
-# Ship briefs begin with a worktree-isolation assertion before the branch step.
+# An isolated-copy ship brief begins with a worktree-isolation assertion before the
+# branch step; a project-branch brief begins with the shared-directory assertion
+# instead, because that mode deliberately works in the captain's own project
+# directory and its safety contract is "never destroy what you did not create".
 # --mode is refused on scout and secondmate scaffolds: a scout's deliverable is a
 # report rather than a merge, and a charter is not a delivery contract.
 # There is no --yolo flag here. The worker never owns merge decisions, so yolo is
@@ -86,6 +100,8 @@ esac
 . "$SCRIPT_DIR/fm-classify-lib.sh"
 # shellcheck source=bin/fm-dod-lib.sh
 . "$SCRIPT_DIR/fm-dod-lib.sh"
+# shellcheck source=bin/fm-project-branch-lib.sh
+. "$SCRIPT_DIR/fm-project-branch-lib.sh"
 PAUSED_VERB=${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}
 
 resolve_directory_input() {
@@ -117,6 +133,8 @@ HERDR_LAB=0
 NO_PROJECTS=0
 MODE=
 MODE_SET=0
+BRANCH=
+BRANCH_SET=0
 POS=()
 want_value=
 for a in "$@"; do
@@ -126,6 +144,7 @@ for a in "$@"; do
     esac
     case "$want_value" in
       mode) MODE=$a; MODE_SET=1 ;;
+      branch) BRANCH=$a; BRANCH_SET=1 ;;
       *) echo "error: internal parser state for --$want_value" >&2; exit 1 ;;
     esac
     want_value=
@@ -138,6 +157,8 @@ for a in "$@"; do
     --no-projects) NO_PROJECTS=1 ;;
     --mode) want_value=mode ;;
     --mode=*) MODE=${a#--mode=}; MODE_SET=1 ;;
+    --branch) want_value=branch ;;
+    --branch=*) BRANCH=${a#--branch=}; BRANCH_SET=1 ;;
     # yolo never reaches the worker: it is firstmate's merge authority, not a
     # brief input. Refuse it loudly so it is never silently dropped here and then
     # believed to have been recorded.
@@ -151,18 +172,34 @@ done
 # missing or invalid value stops the scaffold rather than silently defaulting.
 if [ "$KIND" = ship ]; then
   [ "$MODE_SET" -eq 1 ] || {
-    echo "error: ship briefs require --mode <no-mistakes|direct-PR|local-only>; resolve it at intake from the captain's instruction and the project's registered posture in data/projects.md" >&2
+    echo "error: ship briefs require --mode <no-mistakes|direct-PR|local-only|project-branch>; resolve it at intake from the captain's instruction and the project's registered posture in data/projects.md" >&2
     exit 1
   }
   case "$MODE" in
-    no-mistakes|direct-PR|local-only) ;;
+    no-mistakes|direct-PR|local-only|project-branch) ;;
     no-mistakes-prod-only)
-      echo "error: no-mistakes-prod-only is a registry policy, not a task mode; classify this task's surface and resolve it to no-mistakes or direct-PR at intake" >&2
+      echo "error: no-mistakes-prod-only is a registry policy, not a task mode; classify this task's surface and resolve it to a concrete mode at intake" >&2
       exit 1 ;;
-    *) echo "error: --mode must be one of no-mistakes, direct-PR, local-only (got '$MODE')" >&2; exit 1 ;;
+    *) echo "error: --mode must be one of no-mistakes, direct-PR, local-only, project-branch (got '$MODE')" >&2; exit 1 ;;
   esac
 elif [ "$MODE_SET" -eq 1 ]; then
   echo "error: --mode applies only to ship briefs; a scout delivers a report and a secondmate charter is not a delivery contract" >&2
+  exit 1
+fi
+# The batch branch is the whole point of project-branch and is meaningless
+# anywhere else, so it is required there and refused everywhere else rather than
+# silently ignored.
+if [ "$MODE" = project-branch ]; then
+  [ "$BRANCH_SET" -eq 1 ] && [ -n "$BRANCH" ] || {
+    echo "error: --mode project-branch requires --branch <batch-branch>; resolve it at intake from the branch the project directory is already on, or the branch the captain named" >&2
+    exit 1
+  }
+  fm_project_branch_name_valid "$BRANCH" || {
+    echo "error: '$BRANCH' is not a usable git branch name" >&2
+    exit 1
+  }
+elif [ "$BRANCH_SET" -eq 1 ]; then
+  echo "error: --branch applies only to --mode project-branch; every other mode gives the worker its own disposable branch" >&2
   exit 1
 fi
 ID=${POS[0]}
@@ -394,27 +431,82 @@ echo "scaffolded: $BRIEF (scout; replace {TASK} and {FIRSTMATE_SPEC})"
 exit 0
 fi
 
-# Ship task: shape Setup / Rule 1 by this task's explicit delivery mode, validated
-# above, and render the Definition of done from its single owner, bin/fm-dod-lib.sh,
-# which bin/fm-promote.sh renders too so a promoted scout receives the same contract.
-# The block opens with the fixed "Delivery contract: mode=<mode>" line that
-# bin/fm-spawn.sh checks against its own explicit --mode before launching.
+# Ship task: shape Setup / Rule 1 / Rule 2 by this task's explicit delivery mode,
+# validated above, and render the Definition of done from its single owner,
+# bin/fm-dod-lib.sh, which bin/fm-promote.sh renders too so a promoted scout
+# receives the same contract. The block opens with the fixed
+# "Delivery contract: mode=<mode>" line that bin/fm-spawn.sh checks against its
+# own explicit --mode before launching.
+#
+# Two workspace models, selected here and nowhere else. Every mode but
+# project-branch hands the worker a disposable isolated copy, so its Setup asserts
+# isolation and its rules keep the worker inside that copy. project-branch works in
+# the captain's OWN project directory on a shared batch branch, so its Setup asserts
+# the directory and branch instead, and its rules replace the isolation with the
+# never-destroy-what-you-did-not-create contract (bin/fm-project-branch-lib.sh owns
+# the dispatch-side half of the same guarantees).
+# A plain multi-line assignment, deliberately not $(cat <<EOF ...): a heredoc
+# wrapped in a command substitution breaks Bash 3.2 parsing of the whole file
+# (tests/fm-brief.test.sh guards the shape).
+ISOLATED_SETUP="You are in a disposable git worktree of $REPO, at a detached HEAD on a clean default branch.
+
+**Verify isolation before anything else.** Run \`pwd -P\` and \`git rev-parse --show-toplevel\`; both must resolve to the disposable task worktree you were launched in, such as a treehouse pool path or an Orca-managed worktree, not the primary checkout firstmate operates from.
+The path check is authoritative: \`git rev-parse --git-dir\` and \`git rev-parse --git-common-dir\` can help inspect the repo, but they do not prove you are outside the primary checkout.
+If the top-level path is the primary checkout or not the worktree you were launched in, STOP - do not branch or commit here - append \`blocked: launched in primary checkout, not an isolated worktree\` to the status file and stop."
 case "$MODE" in
   direct-PR)
-    SETUP2=""
+    SETUP_SECTION="$ISOLATED_SETUP
+
+1. First action: create your branch: \`git checkout -b fm/$ID\`"
     RULE1='1. Never push to the default branch (push only your `fm/'"$ID"'` branch). Never merge a PR.'
+    RULE2='2. Stay inside this worktree; modify nothing outside it.'
+    MEMORY_WHERE='in the worktree'
     ;;
   local-only)
-    SETUP2=""
+    SETUP_SECTION="$ISOLATED_SETUP
+
+1. First action: create your branch: \`git checkout -b fm/$ID\`"
     RULE1="1. Never push to any remote and never open a PR. Work only on your \`fm/$ID\` branch; firstmate handles the merge into local \`main\`."
+    RULE2='2. Stay inside this worktree; modify nothing outside it.'
+    MEMORY_WHERE='in the worktree'
+    ;;
+  project-branch)
+    SETUP_SECTION="You are in $REPO's own project directory - the captain's working copy, not a disposable one. He works in this same directory, so nothing here is yours to reset.
+Your batch branch is \`$BRANCH\`. It belongs to a batch of work rather than to this task, other work may already be on it, and its name is never derived from this task's id.
+
+**Verify your ground before anything else.**
+
+1. Run \`pwd -P\` and \`git rev-parse --show-toplevel\`; both must resolve to this project's own directory.
+2. Run \`git rev-parse --abbrev-ref HEAD\`; it must be exactly \`$BRANCH\`.
+3. Run \`git status\` and \`git log --oneline -5\` and read them as an inventory: anything already modified or committed here is the captain's or an earlier task's, not yours.
+
+If the branch is not \`$BRANCH\`, or the top level is not this project's own directory, STOP - do not branch, commit, switch, or clean anything - append \`blocked: project directory is not on branch $BRANCH\` to the status file and stop.
+
+Once that checks out, announce the branch before touching any code: this project is now occupied and the captain has to know by what.
+The Definition of done's stage 1 is that announcement and it is your first status line.
+
+**Never destroy the captain's work.** This contract replaces the isolation you do not have here, and none of it bends for convenience:
+
+- Never \`git stash\`, \`reset\`, \`restore\`, \`checkout --\`, \`clean\`, \`revert\`, or force anything you did not create in this task.
+- Never switch branches and never create another branch: you stay on \`$BRANCH\` for the whole task.
+- Never commit to, push to, or check out the default branch.
+- Uncommitted changes that are not yours are a stop-and-report, not an obstacle to clear: append \`blocked: {what you found}\` and stop.
+- Commit your own work to \`$BRANCH\` as you go, so an interruption can never lose it and the captain can always see where you are."
+    RULE1="1. Never push and never open a PR. A green pipeline is not authority to do either; only a captain instruction relayed by firstmate is (see the Definition of done). Never merge, and never touch the default branch."
+    RULE2="2. Work only in this project directory, on \`$BRANCH\`; modify nothing outside it."
+    MEMORY_WHERE='in the project directory'
     ;;
   *)  # no-mistakes
-    SETUP2="
+    SETUP_SECTION="$ISOLATED_SETUP
+
+1. First action: create your branch: \`git checkout -b fm/$ID\`
 2. Run \`no-mistakes doctor\`; if it reports the repo is not initialized here, run \`no-mistakes init\`."
     RULE1='1. Never push to the default branch. Never merge a PR.'
+    RULE2='2. Stay inside this worktree; modify nothing outside it.'
+    MEMORY_WHERE='in the worktree'
     ;;
 esac
-DOD=$(fm_dod_block "$MODE" "$ID") || exit 1
+DOD=$(fm_dod_block "$MODE" "$ID" "$BRANCH") || exit 1
 
 cat > "$BRIEF" <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
@@ -424,17 +516,11 @@ $TASK_SECTION
 $HERDR_SECTION
 
 # Setup
-You are in a disposable git worktree of $REPO, at a detached HEAD on a clean default branch.
-
-**Verify isolation before anything else.** Run \`pwd -P\` and \`git rev-parse --show-toplevel\`; both must resolve to the disposable task worktree you were launched in, such as a treehouse pool path or an Orca-managed worktree, not the primary checkout firstmate operates from.
-The path check is authoritative: \`git rev-parse --git-dir\` and \`git rev-parse --git-common-dir\` can help inspect the repo, but they do not prove you are outside the primary checkout.
-If the top-level path is the primary checkout or not the worktree you were launched in, STOP - do not branch or commit here - append \`blocked: launched in primary checkout, not an isolated worktree\` to the status file and stop.
-
-1. First action: create your branch: \`git checkout -b fm/$ID\`$SETUP2
+$SETUP_SECTION
 
 # Rules
 $RULE1
-2. Stay inside this worktree; modify nothing outside it.
+$RULE2
 3. Use gh-axi for GitHub operations and chrome-devtools-axi for browser operations.
 4. Report status by appending one line:
    \`echo "{state}: {one short line}" >> $STATUS_FILE\`
@@ -461,7 +547,7 @@ $RULE1
 $INBOX_SECTION
 
 # Project memory
-If \`AGENTS.md\` or \`CLAUDE.md\` already exists, or if this task produced durable project-intrinsic knowledge, run \`$FM_ROOT/bin/fm-ensure-agents-md.sh .\` in the worktree.
+If \`AGENTS.md\` or \`CLAUDE.md\` already exists, or if this task produced durable project-intrinsic knowledge, run \`$FM_ROOT/bin/fm-ensure-agents-md.sh .\` $MEMORY_WHERE.
 Record only project knowledge useful to almost every future session.
 For anything the codebase already shows, prefer a pointer to the authoritative file, command, or doc over copying the detail.
 If you touch a project \`AGENTS.md\` that lacks \`## Maintaining this file\`, add that short self-governance section from \`$FM_ROOT/bin/fm-ensure-agents-md.sh\` in the same pass.

@@ -21,6 +21,10 @@
 # read the scout's report (AGENTS.md section 7); data/projects.md holds the
 # captain's standing posture as context, and this script never looks it up.
 # no-mistakes-prod-only is a registry policy rather than a task mode and is refused.
+# project-branch is refused too, for a structural reason rather than a policy one:
+# promotion keeps the scout's own scratch copy, while a project-branch task works
+# in the project's own directory on the captain's batch branch. That work is a
+# fresh dispatch, not a promotion.
 # Usage: fm-promote.sh <task-id> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off>
 set -eu
 
@@ -85,6 +89,15 @@ done
 }
 case "$MODE" in
   no-mistakes|direct-PR|local-only) ;;
+  project-branch)
+    # A promotion keeps the crewmate's window, worktree, and loaded context. A
+    # project-branch task works in the project's OWN directory on the captain's
+    # batch branch, which is a DIFFERENT directory from the scout's scratch copy,
+    # so there is nothing coherent to promote in place. Refuse rather than move a
+    # live worker between directories.
+    echo "error: a scout cannot be promoted to project-branch: promotion keeps the scout's own scratch copy, and project-branch work happens in the project's own directory on the captain's batch branch" >&2
+    echo "Relay the scout's findings, then dispatch a fresh project-branch ship task against that directory (bin/fm-brief.sh --mode project-branch --branch <batch-branch>)." >&2
+    exit 1 ;;
   no-mistakes-prod-only)
     echo "error: no-mistakes-prod-only is a registry policy, not a task mode; classify this task's surface and resolve it to no-mistakes or direct-PR" >&2
     exit 1 ;;

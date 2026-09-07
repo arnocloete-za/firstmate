@@ -195,6 +195,7 @@ Codex App support is recorded in `docs/codex-app-backend.md`; it is not selectab
 
 ## Worktrees, not branches in your checkout
 
+This is the default of two workspace models; `project-branch` projects use the shared-directory model described at the end of this section.
 Crewmates never intentionally touch your project clone; [treehouse](https://github.com/kunchenguid/treehouse) pools clean worktrees for tmux, herdr, zellij, and cmux tasks, while Orca creates its own worktrees for `backend=orca`.
 For ship and scout work, `fm-spawn.sh` refuses to launch unless the resolved task path is a real git worktree root that is distinct from the project primary checkout.
 `fm-spawn.sh` also owns the base-freshness boundary for every fresh ship and scout: no worker starts until its clean task worktree matches the fetched tip of origin's resolved default branch, and any unsafe or unverifiable base stops the spawn.
@@ -210,6 +211,24 @@ Only a named non-default branch checked out in `FM_ROOT` is a worktree tangle.
 If another live session holds the fleet lock, both surfaces keep the alarm but switch to read-only wording with no repair command.
 Ship briefs also tell the crewmate to verify `pwd -P` and `git rev-parse --show-toplevel` before creating `fm/<id>`, then stop with a blocked status if it landed in the primary checkout.
 
+### The shared-directory model
+
+A project registered `project-branch` deliberately gives up that isolation: its crewmate works in the project's own registered clone, on a batch branch the captain owns, while he may be working in that same directory.
+`bin/fm-project-branch-lib.sh` is the single owner of the refusals that replace what the isolation used to guarantee, and `bin/fm-spawn.sh` runs them all before any endpoint, allocation, or durable record exists, so a refusal leaves nothing behind.
+Occupancy is decided by the project's own git state rather than by firstmate's bookkeeping: a project that is not sitting on its own default branch is occupied, full stop, and the dispatch reports the branch that holds it.
+That deliberately does not distinguish a crewmate holding the branch from the captain holding it, because the second case is the one bookkeeping would miss, and it is the captain's own rule - his loop is one branch, finish it, merge it, branch again.
+The default branch is resolved per project by `fm_default_branch()` in `bin/fm-tangle-lib.sh`, the same single resolver `bin/fm-dashboard-snapshot.sh` uses, since registered projects sit on `master`, `main`, `develop`, and `test` alike.
+A recorded task still holding the directory refuses too, strictly as additional context that can name the work rather than as a substitute for the git-state gate.
+Uncommitted changes on the default branch are refused as their own condition: `checkout -b` would carry them onto the batch branch and into the PR the captain later reviews, and stashing them aside is what this model may never do.
+Work never happens on the default branch, nothing is reset to make room, and this task's own agent wiring never overwrites a file already at one of those paths.
+
+A batch branch belongs to a batch of work rather than to one task, so nothing derives it from a task id and several tasks may land on one branch over its life.
+Because the model owns nothing, it allocates, resets, detaches, deletes, and refreshes nothing: the base-freshness reset above is skipped, and teardown leaves the directory, the branch, and every commit on it exactly as they are, removing only wiring it can prove is its own.
+Teardown's landed-work gate is therefore replaced by an uncommitted-changes gate, since commits are already durable in the captain's own repo while a dirty tree means an interrupted edit or the captain working there right now.
+A task's metadata records the model as `workspace=project` with its `branch=`; an absent `workspace=` means the isolated copy, so records predating the model keep their meaning.
+`backend=orca` is refused for it, because an Orca-allocated worktree is the very thing the model does without.
+`tests/fm-project-branch.test.sh` owns the portable regression coverage for those refusals.
+
 ## No-mistakes gate authority boundary
 
 Firstmate's own no-mistakes gate runs agents inside a checkout that also contains the fleet-captain identity in `AGENTS.md`, so gate execution needs an authority boundary separate from ordinary crewmate worktree isolation.
@@ -220,7 +239,7 @@ The helper's header owns the exact signal detection, relocated-home limitation, 
 
 ## Two task shapes
 
-Ship tasks change projects and ship by project mode (`no-mistakes`, `direct-PR`, or `local-only`); scout tasks leave standalone investigation reports at `data/<id>/report.md` and never push.
+Ship tasks change projects and ship by project mode (`no-mistakes`, `direct-PR`, `local-only`, or `project-branch`); scout tasks leave standalone investigation reports at `data/<id>/report.md` and never push.
 The intake and authority contract in `AGENTS.md` owns when separate scout research is warranted.
 
 ## Dispatch profiles
@@ -249,6 +268,7 @@ Retirement or seed rollback returns the leased home; normal restart/recovery kee
 If returning the lease fails during teardown, firstmate leaves the route and home intact instead of hiding a still-held lease.
 Seeding is transactional: if validation, cloning, initialization, or registry update fails, generated briefs, new homes, new project clones, and registry edits are rolled back.
 `local-only` projects stay with the main first mate because they merge into the main local checkout instead of a remote-backed PR path.
+`project-branch` projects stay there too, because the model is defined by the captain's own project directory on the main machine and a secondmate's separate clone is not that directory.
 The same project may appear in multiple secondmate homes when their scopes differ, such as issue triage versus feature development.
 Secondmates are idle by default: after startup recovery reconciles only work already in their own home, an empty queue waits silently for routed tasks, and they never self-initiate surveys or audits.
 When called with `FM_HOME=<this-firstmate-home>` or when `FM_HOME` is already set to the active firstmate home, metadata-routed `fm-send.sh` requests to a live `kind=secondmate` use the live-charter-compatible `from-firstmate` carrier owned by `bin/fm-operational-input.sh`, so the secondmate returns terse answers through status lines and detailed answers through docs plus status pointers instead of replying only in its own chat.
@@ -280,13 +300,17 @@ The `data/secondmates.md` line contract is owned by the [`secondmate-provisionin
 ## Delivery modes are explicit per task
 
 `no-mistakes` tasks run the full validation pipeline, `direct-PR` tasks open PRs without that pipeline, and `local-only` tasks stay local until firstmate performs an approved fast-forward merge.
+`project-branch` tasks run that same pipeline but end at a captain gate rather than at an open PR: the worker announces its branch, builds and bumps the version in the project's own directory, runs the pipeline with its `push,pr,ci` steps skipped, and stops at ready for a pull request, so a green pipeline can neither push nor open one.
+Only a relayed captain instruction releases a second, unskipped run that pushes and opens the PR, because he wants the reminder that work is ready and keeps that decision himself.
+It is the one mode whose delivery contract also selects a workspace model, which is why `--mode project-branch` requires `--branch` on both `bin/fm-brief.sh` and `bin/fm-spawn.sh` and the brief's recorded branch is checked against the dispatched one exactly as its mode is.
+`bin/fm-promote.sh` refuses it, because promotion keeps a scout's own scratch copy and that copy is not the project's directory.
 Each task's mode and `yolo` merge posture are firstmate's decision at intake.
 The mode is passed explicitly to `bin/fm-brief.sh`, and both values are passed explicitly to `bin/fm-spawn.sh` and `bin/fm-promote.sh`; each command refuses to guess the values it consumes.
 A ship brief records its mode as a fixed machine-readable line and the spawn refuses to launch on a different one, so the worker's instructions and the recorded task delivery cannot diverge.
 `bin/fm-dod-lib.sh` is the one owner of that mode's definition of done, rendered both into a generated ship brief and into the ship instructions a promoted scout receives, so a promoted worker cannot be handed a weaker contract than a briefed one.
 It is also the one owner of the no-mistakes `--intent` contract those workers follow.
 `data/projects.md` records each project's standing posture and optional `+yolo` merge flag as the captain's default and as context for that decision, including the conditional `no-mistakes-prod-only` policy; a ship spawn that drops below the registered rigor prints a deviation notice and continues.
-`bin/fm-project-mode.sh` remains the one registry parser for the mechanical consumers that have no task in hand: fleet sync's `local-only` skip and home seeding's refusal and no-mistakes initialization.
+`bin/fm-project-mode.sh` remains the one registry parser for the mechanical consumers that have no task in hand: fleet sync's `local-only` skip and home seeding's refusals and no-mistakes initialization.
 When a selected delivery path calls for a diff, `bin/fm-review-diff.sh` refreshes the authoritative base and, when task meta records `pr=`, always fetches and compares against `refs/pull/<n>/head` by default (recorded `pr_head=` is only an offline fallback) before falling back to the local branch with a warning.
 Where a no-mistakes pipeline stores evidence in the repo, it publishes that PR-viewable validation evidence to an orphan evidence branch that shares no history with code branches, so it never enters the crew branch or the default branch.
 This repo uses that setting, and its own `.no-mistakes/` directory remains local state that stays gitignored and is rejected by CI if tracked; [`configuration.md`](configuration.md) owns the setting.

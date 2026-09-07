@@ -298,6 +298,9 @@ Pass the mode explicitly to the brief, and pass both values explicitly to the sp
 A current explicit captain instruction wins; otherwise the project's registry entry is the captain's standing posture, and dropping below its rigor needs a reason you can state.
 On a `no-mistakes-prod-only` project, classify the task's surface: internal-only tooling, automation, contributor or operator process, and release or submission work ships `direct-PR`, while product-facing, mixed, and uncertain work ships `no-mistakes`; never infer internal-only from file location or project name.
 An unregistered project or absent registry resolves to `no-mistakes` with yolo off, and the registration gap goes to the captain.
+On a `project-branch` project, also resolve the batch branch at intake from what the captain names, and pass it explicitly to the brief and the spawn.
+Never resolve it to the default branch, adopt a branch the directory is already on, or invent one from the task id: a project already off its default branch is occupied, and the dispatch will refuse.
+Tell the captain the branch name once work starts, because that is how he knows which branch holds his project.
 Record the resulting mode, `yolo` merge posture, and the one-line reason for any deviation in the backlog item note.
 
 Treat file or subsystem overlap as a risk signal rather than an automatic reason to wait, and dispatch isolated work immediately with no concurrency cap when each change can be independently implemented and validated and the selected delivery path can reconcile ordinary rebases or conflicts.
@@ -308,7 +311,8 @@ Fill the task subsections according to section 11.
 ### Dispatch and supervision handoff
 
 Spawn only through `bin/fm-spawn.sh` after the profile and backend checks in section 4.
-The spawn must resolve a genuine isolated task worktree distinct from the primary checkout; a failed isolation assertion stops the task.
+Every mode but `project-branch` must resolve a genuine isolated task worktree distinct from the primary checkout; a failed isolation assertion stops the task.
+A `project-branch` spawn asserts the project's own directory and its batch branch instead, and `bin/fm-project-branch-lib.sh` owns the refusals that replace the lost isolation.
 When the configured tasks-axi backlog gate applies, the spawn itself moves the work item to In flight and refuses rather than dispatching work this home has no item for, so recording the dispatch is never a separate step to remember; a manual-backend home retains the hand-editing contract in `docs/configuration.md`.
 After spawning, confirm the worker is processing the brief and handle any trust dialog through `harness-adapters`.
 A persistent secondmate is recorded in the secondmate registry and runtime state, never as a backlog work item.
@@ -334,6 +338,12 @@ The path's worker, automated gates, and captain approval remain authoritative:
 - **no-mistakes** runs the full pipeline through a PR, then waits for the configured merge authority.
 - **direct-PR** has the worker push and open a PR without the no-mistakes pipeline, then waits for the configured merge authority.
 - **local-only** has the worker stop with a clean ready branch, then waits for the configured merge authority before firstmate uses the guarded fast-forward merge path.
+- **project-branch** works in the project's own registered directory on a batch branch the captain owns, rather than in an isolated copy.
+  The worker announces the branch, builds and bumps the project's version there, runs the full review pipeline with its push, PR, and CI steps skipped, and stops at ready for a pull request.
+  A green pipeline is never authority to open one: only the captain's relayed word releases the run that pushes and opens the PR he then merges and deploys himself.
+  A batch branch belongs to a batch of work rather than to one task, so several tasks may land on it and no branch name is ever derived from a task id.
+  A project that is not sitting on its own default branch is occupied - by a worker or by the captain himself - and dispatch stops and reports which branch holds it rather than deciding between those cases.
+  One piece of work at a time per project is the captain's own ruling, so that refusal is the model working; take it to him instead of engineering around it.
 
 Delivery mode and `yolo` are orthogonal.
 `yolo` governs merge authority only: with it off, the captain approves every PR merge and every local-only landing; with it on, firstmate merges green, in-scope work itself.
@@ -372,6 +382,8 @@ The worker reports the PR when CI first becomes green rather than waiting for me
 ### PR ready, landing, and teardown
 
 For PR-based ship tasks, the ready signal depends on mode: `no-mistakes` reports `done: PR <url> checks green` after CI is green, while `direct-PR` reports `done: PR <url>` after opening the PR.
+A `project-branch` task reports ready twice: first `done: ready for a pull request on branch <branch>` once its review pipeline passes, which is not a PR and must never be relayed as one, and then `done: PR <url> checks green` only after his word has been relayed and the PR run has opened it.
+Take that first signal to the captain as reviewed work ready on that named branch, waiting on his decision to open the pull request, and then wait; a passing pipeline never authorizes that PR itself.
 Run `bin/fm-pr-check.sh <id> <PR url>` - it records `pr=` and the forge's `pr_head=` when available in the task's meta and arms the watcher's merge poll.
 Tell the captain the PR's full URL, always the complete `https://...` link rather than a bare `#number`, a concise outcome summary, and the no-mistakes risk level when applicable.
 A captain instruction to merge is explicit authority; `yolo` is the only standing routine merge authority.
@@ -431,7 +443,7 @@ A forced repair must use the home-scoped owner path emitted by supervision instr
 
 Guard warnings do not replace the contract.
 Queued wakes must be presented before other action and acknowledged only after handling, stale liveness must be repaired through the emitted protocol, and the worktree-tangle warning must be resolved without touching unlanded work.
-The spawn assertion and generated ship brief must both enforce that project work starts in an isolated disposable worktree, never the primary checkout.
+The spawn assertion and generated ship brief must both enforce where that task's work starts: an isolated disposable worktree and never the primary checkout for every mode but `project-branch`, and the project's own directory on its named batch branch and never the default branch for that one.
 Harness-aware turn-end guards are structural backstops, not permission to omit the live cycle.
 
 ### Away-mode stub
@@ -524,7 +536,8 @@ Use its scaffold as the contract, then fill `## Captain's intent` (`{TASK}`) wit
 `bin/fm-dod-lib.sh` owns what a no-mistakes worker may pass as `--intent`.
 Keep additions task-specific rather than repeating lifecycle instructions, and alter generated sections only when the task genuinely differs from the standard shape.
 
-Every ship brief must retain the worktree-isolation assertion and stop if launched in the primary checkout.
+Every isolated-copy ship brief must retain the worktree-isolation assertion and stop if launched in the primary checkout.
+A `project-branch` brief retains the shared-directory assertion in its place, scaffolded with `--branch`: it stops unless the directory is on the named batch branch, and its never-destroy-what-you-did-not-create contract is what replaces the isolation.
 If a ship task touches firstmate's shared tracked material, explicitly require `firstmate-coding-guidelines` before editing.
 If a task will drive Herdr lifecycle behavior, scaffold with `--herdr-lab`; if that need appears after an unguarded scaffold, stop and regenerate rather than adding commands by hand.
 The generated Herdr contract must use a named non-`default` isolated lab and its guarded helper for every lifecycle action.

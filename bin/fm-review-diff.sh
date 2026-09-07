@@ -10,6 +10,8 @@
 # only a fallback when fetch fails (stale recorded SHAs must never win over a
 # reachable remote PR head). If neither PR head can be resolved, fall back to
 # the local branch with a warning. Without pr=, compare the local branch.
+# A task whose metadata records branch= (the project-directory workspace) is
+# reviewed on that recorded batch branch rather than on an fm/<id> guess.
 # Usage: fm-review-diff.sh <task-id> [--stat]
 #   --stat prints only the stat summary; default prints stat summary plus full diff.
 set -eu
@@ -67,11 +69,22 @@ default_branch() {
 
 DEFAULT=$(default_branch) || { echo "error: cannot determine default branch for $PROJ; expected origin/HEAD, main, or master" >&2; exit 1; }
 
-BRANCH="fm/$ID"
-if ! git -C "$WT" rev-parse --verify --quiet "refs/heads/$BRANCH" >/dev/null; then
-  BRANCH=$(git -C "$WT" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
-  [ -n "$BRANCH" ] || { echo "error: branch fm/$ID does not exist and worktree $WT is detached" >&2; exit 1; }
-  git -C "$WT" rev-parse --verify --quiet "refs/heads/$BRANCH" >/dev/null || { echo "error: branch $BRANCH does not exist in $WT" >&2; exit 1; }
+# A task that records its own branch (the project-directory workspace, whose
+# batch branch belongs to a batch of work rather than to this task) is
+# authoritative: never fall back to the fm/<id> guess there, because a stale
+# fm/<id> left by an unrelated earlier task would otherwise be reviewed instead
+# of the branch this work is actually on.
+RECORDED_BRANCH=$(grep '^branch=' "$META" | tail -1 | cut -d= -f2- || true)
+if [ -n "$RECORDED_BRANCH" ]; then
+  BRANCH=$RECORDED_BRANCH
+  git -C "$WT" rev-parse --verify --quiet "refs/heads/$BRANCH" >/dev/null || { echo "error: task $ID records branch $BRANCH but it does not exist in $WT" >&2; exit 1; }
+else
+  BRANCH="fm/$ID"
+  if ! git -C "$WT" rev-parse --verify --quiet "refs/heads/$BRANCH" >/dev/null; then
+    BRANCH=$(git -C "$WT" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
+    [ -n "$BRANCH" ] || { echo "error: branch fm/$ID does not exist and worktree $WT is detached" >&2; exit 1; }
+    git -C "$WT" rev-parse --verify --quiet "refs/heads/$BRANCH" >/dev/null || { echo "error: branch $BRANCH does not exist in $WT" >&2; exit 1; }
+  fi
 fi
 
 pr_number_from_target() {
