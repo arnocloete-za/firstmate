@@ -6,7 +6,9 @@
 # page carries a readable fm-dashboard-snapshot.v1 payload), HTTP
 # reachability of the served content, idempotent reuse of an already-running
 # server across a rebuild, `stop`, that one idle connection cannot wedge the
-# server for everyone else, the POST /run endpoint's rejection of an unknown
+# server for everyone else, that a server recorded before this script grew
+# POST /run is stopped and replaced rather than orphaned on its port, the
+# POST /run endpoint's rejection of an unknown
 # project name, of a project with no run_script, of a project whose path is
 # not a directory, and of a cross-site or non-JSON request, and (when tmux is
 # available) its registry-trusted launch plus that a second /run for the same
@@ -134,8 +136,10 @@ SH
   PATH="$SHIM_DIR:$PATH"
   export PATH
 fi
+LEGACY_PIDS=
 cleanup() {
   "$SERVE" stop >/dev/null 2>&1 || true
+  for _lp in $LEGACY_PIDS; do kill "$_lp" 2>/dev/null || true; done
   if [ -n "$REAL_TMUX" ]; then
     "$REAL_TMUX" -L "$TMUX_SOCKET" kill-server >/dev/null 2>&1 || true
   fi
@@ -362,6 +366,61 @@ pass "stop terminates the server and the state file is cleared"
 STOP_AGAIN=$("$SERVE" stop) || fail "stop should be idempotent when nothing is running"
 echo "$STOP_AGAIN" | grep -q "not running" || fail "stop with no server should report not running: $STOP_AGAIN"
 pass "stop is idempotent when no server is running"
+
+# --- upgrade path. Earlier versions of this script served the board with
+# `python3 -m http.server <port>` and recorded that pid in the same state
+# file. That process still serves the rebuilt page but has no POST /run, so
+# it must be stopped and replaced - never reused, and never left holding the
+# port with its state record overwritten.
+DASH_DIR=$(dirname "$BOARD")
+LEGACY_PORT=$FM_DASHBOARD_PORT_BASE
+# Sets LEGACY_PID in the caller rather than printing it: staging inside a
+# command substitution would put the server's pid in a subshell, where the
+# record this cleanup trap relies on dies with it, leaking the process on
+# every failure path.
+stage_legacy_server() {  # sets LEGACY_PID
+  local waited=0
+  nohup python3 -m http.server "$LEGACY_PORT" --bind 127.0.0.1 --directory "$DASH_DIR" \
+    >/dev/null 2>&1 </dev/null &
+  LEGACY_PID=$!
+  LEGACY_PIDS="$LEGACY_PIDS $LEGACY_PID"
+  while [ "$waited" -lt 40 ]; do
+    [ "$(curl -s -o /dev/null -m 2 -w '%{http_code}' "http://127.0.0.1:$LEGACY_PORT/")" = "200" ] \
+      && return 0
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  fail "could not stage a pre-upgrade http.server on port $LEGACY_PORT"
+}
+
+stage_legacy_server
+printf 'pid=%s\nport=%s\n' "$LEGACY_PID" "$LEGACY_PORT" > "$STATE_FILE"
+STOP_LEGACY=$("$SERVE" stop) || fail "stop over a pre-upgrade server failed: $STOP_LEGACY"
+echo "$STOP_LEGACY" | grep -q "stopped: pid $LEGACY_PID" \
+  || fail "stop should report stopping the pre-upgrade server it recorded, got: $STOP_LEGACY"
+sleep 0.3
+if kill -0 "$LEGACY_PID" 2>/dev/null; then
+  fail "stop left the pre-upgrade server running (pid $LEGACY_PID) after deleting its record"
+fi
+pass "stop terminates a pre-upgrade dashboard server instead of reporting it not running"
+
+stage_legacy_server
+LEGACY_PID2=$LEGACY_PID
+printf 'pid=%s\nport=%s\n' "$LEGACY_PID2" "$LEGACY_PORT" > "$STATE_FILE"
+OUT_UPG=$("$SERVE" build "$DATA") || fail "build over a pre-upgrade server failed: $OUT_UPG"
+URL_UPG=$(echo "$OUT_UPG" | sed -n 's/^served: //p')
+[ "$URL_UPG" = "http://127.0.0.1:$LEGACY_PORT/" ] \
+  || fail "build should reclaim the pre-upgrade server's port $LEGACY_PORT, got $URL_UPG"
+if kill -0 "$LEGACY_PID2" 2>/dev/null; then
+  fail "build left the pre-upgrade server running (pid $LEGACY_PID2) while starting a replacement"
+fi
+UPG_RUN_CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$URL_UPG/run" \
+  -H 'Content-Type: application/json' -d '{"name":"not-a-real-project"}')
+[ "$UPG_RUN_CODE" = "400" ] \
+  || fail "the replacement server on $LEGACY_PORT should own POST /run, got $UPG_RUN_CODE"
+pass "build stops and replaces a pre-upgrade dashboard server instead of orphaning it on its port"
+
+"$SERVE" stop >/dev/null 2>&1 || true
 
 # --- POST /run. The request-trust checks need no tmux, so they run
 # unconditionally; the launch checks below need a real tmux. The "dashboard"

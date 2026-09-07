@@ -22,7 +22,11 @@
 #            stable path $FM_HOME/.dashboard/index.html. Reuses an already-live
 #            server for this home when one is running (its content is served
 #            straight off disk, so the rebuilt file is picked up on the
-#            browser's next request/reload with no restart needed); otherwise
+#            browser's next request/reload with no restart needed). A server
+#            this script recorded before it grew POST /run (the older
+#            `python3 -m http.server` shape) is stopped and replaced rather
+#            than reused or orphaned, since Run cannot work against it.
+#            Otherwise
 #            binds a fresh python3 static server to 127.0.0.1 on the first
 #            free port at or after FM_DASHBOARD_PORT_BASE (default 4590,
 #            scanning up to 50 ports) and records its pid/port for reuse.
@@ -99,21 +103,41 @@ find_free_port() {  # <base>
   fail "no free port found in [$base, $((base + PORT_TRIES - 1))]"
 }
 
-# running_dashboard_pid <pid> <port>: true if <pid> is alive and looks like
-# the fm-dashboard-server.py we launched for <port> (best-effort cmdline
-# check; Linux /proc only, since a stale/foreign pid on that number is
-# otherwise harmless - it just costs one extra port scan).
-running_dashboard_pid() {
+# dashboard_pid_kind <pid> <port>: classify a pid this tool recorded in its
+# own state file. Prints:
+#   current - the bin/fm-dashboard-server.py we launched for <port>; reusable
+#             as it stands, since it serves the rebuilt page and owns POST /run
+#   legacy  - the `python3 -m http.server <port>` earlier versions of this
+#             script launched for the same home and recorded the same way. It
+#             still serves the rebuilt page, but it has no POST /run, so Run
+#             can only ever fail against it: it can be stopped and replaced,
+#             never reused
+#   nothing - <pid> is dead, or alive but belongs to something else
+# Best-effort cmdline check, Linux /proc only; where /proc is unreadable a
+# live recorded pid is taken at its word as "current", as it always was.
+dashboard_pid_kind() {
   local pid=$1 port=$2 cmdline
-  kill -0 "$pid" 2>/dev/null || return 1
+  kill -0 "$pid" 2>/dev/null || return 0
   if [ -r "/proc/$pid/cmdline" ]; then
     cmdline=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)
     case "$cmdline" in
-      *fm-dashboard-server.py*"$port"*) return 0 ;;
-      *) return 1 ;;
+      *fm-dashboard-server.py*"$port"*) printf 'current\n' ;;
+      *http.server*"$port"*) printf 'legacy\n' ;;
     esac
+    return 0
   fi
-  return 0
+  printf 'current\n'
+}
+
+# wait_pid_gone <pid>: bounded wait (2s) for <pid> to exit.
+wait_pid_gone() {
+  local pid=$1 waited=0
+  while [ "$waited" -lt 20 ]; do
+    kill -0 "$pid" 2>/dev/null || return 0
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  return 1
 }
 
 read_state() {  # prints "pid port" or nothing
@@ -140,10 +164,16 @@ start_server() {  # <dir> -> prints port
   if [ -n "$existing" ]; then
     pid=${existing% *}
     eport=${existing#* }
-    if running_dashboard_pid "$pid" "$eport"; then
-      printf '%s\n' "$eport"
-      return 0
-    fi
+    case "$(dashboard_pid_kind "$pid" "$eport")" in
+      current)
+        printf '%s\n' "$eport"
+        return 0
+        ;;
+      legacy)
+        kill "$pid" 2>/dev/null || true
+        wait_pid_gone "$pid" || fail "could not stop the previous dashboard server (pid $pid, port $eport)"
+        ;;
+    esac
   fi
 
   port=$(find_free_port "$PORT_BASE")
@@ -222,7 +252,7 @@ command_stop() {
   [ -n "$existing" ] || { printf 'not running\n'; return 0; }
   pid=${existing% *}
   port=${existing#* }
-  if running_dashboard_pid "$pid" "$port"; then
+  if [ -n "$(dashboard_pid_kind "$pid" "$port")" ]; then
     kill "$pid" 2>/dev/null || true
     printf 'stopped: pid %s\n' "$pid"
   else

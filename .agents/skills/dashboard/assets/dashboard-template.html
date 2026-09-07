@@ -406,7 +406,8 @@ __FM_DASHBOARD_DATA__
     runBtn.type = 'button';
     runBtn.className = 'run-btn';
     runBtn.textContent = 'Run';
-    runBtn.title = 'Run ' + p.name + ' in tmux';
+    var defaultTitle = 'Run ' + p.name + ' in tmux';
+    runBtn.title = defaultTitle;
     runBtn.addEventListener('click', function (e) {
       e.stopPropagation();
       // Disable only for the in-flight request itself, not for a cosmetic
@@ -422,9 +423,28 @@ __FM_DASHBOARD_DATA__
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({name: p.name})
       }).then(function (res) {
-        runBtn.textContent = res.ok ? 'Started' : 'Failed';
-      }).catch(function () {
+        if (res.ok) {
+          runBtn.textContent = 'Started';
+          runBtn.title = defaultTitle;
+          return;
+        }
         runBtn.textContent = 'Failed';
+        // The server computes a specific reason for every refusal (no run
+        // script, not absolute, not executable, path gone, unknown project,
+        // tmux failed). Keep it: on the tooltip, which outlives the 1200ms
+        // label reset, and in the console for a durable record.
+        return res.json().then(function (body) {
+          return (body && body.error) ? body.error : 'HTTP ' + res.status;
+        }, function () {
+          return 'HTTP ' + res.status;
+        }).then(function (reason) {
+          runBtn.title = 'Run failed: ' + reason;
+          console.error('dashboard: /run for ' + p.name + ' failed: ' + reason);
+        });
+      }).catch(function (err) {
+        runBtn.textContent = 'Failed';
+        runBtn.title = 'Run failed: ' + err;
+        console.error('dashboard: /run for ' + p.name + ' could not be sent: ' + err);
       }).then(function () {
         runBtn.disabled = false;
         setTimeout(function () {
