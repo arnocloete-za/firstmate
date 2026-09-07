@@ -19,8 +19,9 @@
 # not mistaken for a live one, that a run script whose path carries a shell
 # metacharacter really runs rather than reporting a launch tmux never made,
 # that the first Run creates the session carrying only the project's own
-# window, and that concurrent Runs can neither duplicate a window nor collide
-# creating the session.
+# window, that an unrelated tmux window named "dashboard" cannot misdirect a
+# launch into another session, and that concurrent Runs can neither duplicate
+# a window nor collide creating the session.
 #
 # It also proves its own blast radius: the run below is wrapped in a parent
 # phase that parks a canary session on the default tmux socket, runs this
@@ -291,6 +292,18 @@ cat > "$DATA" <<JSON
       "last_commit": {"date": "2026-01-01T00:00:00Z", "author": "alice", "subject": "init"},
       "commits": [],
       "run_script": "$META_SCRIPT"
+    },
+    {
+      "name": "decoytest",
+      "path": "$RUNTEST_DIR",
+      "available": true,
+      "clean": true,
+      "branch": "main",
+      "default_branch": "main",
+      "on_default": true,
+      "last_commit": {"date": "2026-01-01T00:00:00Z", "author": "alice", "subject": "init"},
+      "commits": [],
+      "run_script": "$TMP_ROOT/runtest.sh"
     },
     {
       "name": "conctest",
@@ -569,20 +582,20 @@ else
   # the same reason the server uses them: a bare "dashboard" prefix-matches
   # other sessions, and "dashboard:run.test" parses "test" as a pane.
   dashboard_windows() {  # -> "<window id>\t<window name>" per window
-    tmux list-windows -t '=dashboard' -F $'#{window_id}\t#{window_name}' 2>/dev/null
+    tmux list-windows -t '=dashboard:' -F $'#{window_id}\t#{window_name}' 2>/dev/null
   }
   dashboard_window_ids() {  # <window name> -> matching tmux window ids
     dashboard_windows | awk -F'\t' -v n="$1" '$2 == n { print $1 }'
   }
   active_dashboard_window() {
-    tmux list-windows -t '=dashboard' -F $'#{window_active}\t#{window_name}' 2>/dev/null \
+    tmux list-windows -t '=dashboard:' -F $'#{window_active}\t#{window_name}' 2>/dev/null \
       | awk -F'\t' '$1 == 1 { print $2 }'
   }
 
   # This test's private tmux starts with no dashboard session at all, so the
   # first Run has to create one - and it must come up carrying only the
   # project's own window, with no stray bare shell alongside it.
-  if tmux has-session -t '=dashboard' 2>/dev/null; then
+  if tmux has-session -t '=dashboard:' 2>/dev/null; then
     fail "the private test tmux should start with no dashboard session"
   fi
 
@@ -704,12 +717,12 @@ else
   # Wait for the pane to actually be dead, so the next click sees a corpse.
   waited=0
   while [ "$waited" -lt 50 ]; do
-    [ "$(tmux list-panes -s -t '=dashboard' -F $'#{window_name}\t#{pane_dead}' 2>/dev/null \
+    [ "$(tmux list-panes -s -t '=dashboard:' -F $'#{window_name}\t#{pane_dead}' 2>/dev/null \
       | awk -F'\t' '$1 == "deadtest" && $2 == 1 { print 1; exit }')" = "1" ] && break
     sleep 0.1
     waited=$((waited + 1))
   done
-  DEAD_WID=$(tmux list-panes -s -t '=dashboard' -F $'#{window_id}\t#{window_name}\t#{pane_dead}' 2>/dev/null \
+  DEAD_WID=$(tmux list-panes -s -t '=dashboard:' -F $'#{window_id}\t#{window_name}\t#{pane_dead}' 2>/dev/null \
     | awk -F'\t' '$2 == "deadtest" && $3 == 1 { print $1; exit }')
   [ -n "$DEAD_WID" ] \
     || fail "remain-on-exit should have left a dead deadtest window behind"
@@ -727,11 +740,40 @@ else
   done
   [ "$(grep -c . "$DEAD_MARKER")" -ge 2 ] \
     || fail "the run script should have run a second time, marker has $(grep -c . "$DEAD_MARKER") line(s)"
-  tmux list-panes -s -t '=dashboard' -F '#{window_id}' 2>/dev/null | grep -qxF "$DEAD_WID" \
+  tmux list-panes -s -t '=dashboard:' -F '#{window_id}' 2>/dev/null | grep -qxF "$DEAD_WID" \
     || fail "the finished run's window $DEAD_WID was destroyed; its output should have been preserved"
   pass "/run treats a finished run's leftover window as no live run, starts a fresh one, and preserves the old output"
 
   tmux set-option -g remain-on-exit off >/dev/null 2>&1 || true
+
+  # tmux resolves a -t argument as a window target before falling back to a
+  # session name, so an unrelated window called "dashboard" - an ordinary
+  # thing to name one - can capture every target this server sends. Park one
+  # in a second session and require the launch to still land in the real
+  # dashboard session.
+  tmux new-session -d -s decoy -n dashboard 'sleep 300' >/dev/null 2>&1 \
+    || fail "could not park the decoy session"
+  DECOY_BODY=$(curl -s -w '\n%{http_code}' -X POST "$URL3/run" \
+    -H 'Content-Type: application/json' -d '{"name":"decoytest"}')
+  [ "$(printf '%s\n' "$DECOY_BODY" | tail -n1)" = "200" ] \
+    || fail "a Run alongside an unrelated 'dashboard' window should succeed, got: $DECOY_BODY"
+  [ "$(printf '%s\n' "$DECOY_BODY" | sed '$d' | jq -r '.action // ""')" = "launched" ] \
+    || fail "that Run should report a launch, got: $DECOY_BODY"
+  [ -n "$(dashboard_window_ids decoytest)" ] \
+    || fail "decoytest's window was not created in the dashboard session"
+  [ "$(tmux list-panes -s -t '=decoy:' -F '#{window_name}' 2>/dev/null | grep -c .)" = "1" ] \
+    || fail "the launch leaked into the decoy session: $(tmux list-panes -s -t '=decoy:' -F '#{window_name}' 2>/dev/null | tr '\n' ' ')"
+
+  # The liveness check must read the dashboard session too, not the decoy's.
+  DECOY_BODY2=$(curl -s -w '\n%{http_code}' -X POST "$URL3/run" \
+    -H 'Content-Type: application/json' -d '{"name":"decoytest"}')
+  [ "$(printf '%s\n' "$DECOY_BODY2" | sed '$d' | jq -r '.action // ""')" = "focused" ] \
+    || fail "a re-run alongside an unrelated 'dashboard' window should focus the live run, got: $DECOY_BODY2"
+  [ "$(dashboard_window_ids decoytest | grep -c .)" = "1" ] \
+    || fail "the re-run duplicated decoytest's window"
+  pass "an unrelated tmux window named 'dashboard' cannot misdirect a launch or the liveness check"
+
+  tmux kill-session -t '=decoy' >/dev/null 2>&1 || true
 
   # <project name> <label>: fire six /run requests at once. Every one must
   # answer 200, and exactly one window must exist afterwards - an unserialized
@@ -762,8 +804,8 @@ else
   # The same burst with no dashboard session at all: every request sees no
   # session, so an unserialized launch has them all race to create it and all
   # but one fail with tmux's own "duplicate session".
-  tmux kill-session -t '=dashboard' >/dev/null 2>&1 || true
-  if tmux has-session -t '=dashboard' 2>/dev/null; then
+  tmux kill-session -t '=dashboard:' >/dev/null 2>&1 || true
+  if tmux has-session -t '=dashboard:' 2>/dev/null; then
     fail "could not clear the private dashboard session for the creation-race check"
   fi
   assert_concurrent_run conctest session-missing

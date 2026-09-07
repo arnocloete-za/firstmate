@@ -38,11 +38,20 @@ look-for-an-existing-window and create-it steps are a single check-then-act on
 shared tmux state, so two clicks arriving together can neither both miss the
 same window and duplicate it nor collide creating the session.
 
-Every tmux target here is either an exact session name ("=dashboard") or a
-tmux-assigned window id ("@N"), never an interpolated "session:window" string:
-tmux prefix-matches bare session names, so a bare "dashboard" target can land
-in an unrelated session like "dashboard-notes", and a window name containing
-"." or ":" parses as a pane/window suffix rather than as the name.
+Every tmux target here is either this session's own scope ("=dashboard:") or
+a tmux-assigned window id ("@N"), never an interpolated "session:window"
+string, because a window name containing "." or ":" parses as a pane/window
+suffix rather than as the name.
+
+Both halves of "=dashboard:" earn their place. Without the "=", tmux
+prefix-matches session names and the target can land in an unrelated session
+like "dashboard-notes". Without the trailing ":", tmux resolves a -t argument
+as a window target first and only falls back to reading it as a session name,
+so a window named "dashboard" anywhere it searches wins that race - and then
+list-panes reports that foreign session's panes and new-window tries to reuse
+that window's index ("index in use"). The colon forces the
+"<session>:<current window>" parse, which keeps the exact-session match while
+never matching a window name.
 
 POST /run is closed to other pages the captain has open, though not to local
 non-browser clients, which send neither header and are served: it requires an
@@ -87,7 +96,7 @@ DATA_SLOT_RE = re.compile(
     re.S,
 )
 SESSION = "dashboard"
-SESSION_TARGET = "=" + SESSION
+SESSION_TARGET = "=" + SESSION + ":"
 LAUNCH_LOCK = threading.Lock()
 # A tmux client blocks forever on a socket whose server is alive but wedged
 # (SIGSTOPed or thrashing): connect() succeeds and the read never returns.

@@ -417,6 +417,7 @@ __FM_DASHBOARD_DATA__
     runBtn.textContent = 'Run';
     var defaultTitle = 'Run ' + p.name + ' in tmux';
     runBtn.title = defaultTitle;
+    var labelTimer = null;
     runBtn.addEventListener('click', function (e) {
       e.stopPropagation();
       // Disable only for the in-flight request itself, not for a cosmetic
@@ -425,6 +426,14 @@ __FM_DASHBOARD_DATA__
       // still going) must have that click reach the server, not have the
       // button silently swallow it while showing a leftover "Started" label.
       if (runBtn.disabled) return;
+      // Drop the previous click's pending label reset. Left armed, it fires
+      // mid-way through this click and rewrites the outcome back to "Run",
+      // so a real Started/Focused/Failed flashes for a few milliseconds and
+      // then looks like nothing happened.
+      if (labelTimer !== null) {
+        clearTimeout(labelTimer);
+        labelTimer = null;
+      }
       runBtn.disabled = true;
       runBtn.textContent = '...';
       fetch('/run', {
@@ -466,7 +475,8 @@ __FM_DASHBOARD_DATA__
         console.error('dashboard: /run for ' + p.name + ' could not be sent: ' + err);
       }).then(function () {
         runBtn.disabled = false;
-        setTimeout(function () {
+        labelTimer = setTimeout(function () {
+          labelTimer = null;
           if (!runBtn.disabled) runBtn.textContent = 'Run';
         }, 1200);
       });
