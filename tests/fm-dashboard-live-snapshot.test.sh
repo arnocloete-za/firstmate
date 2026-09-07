@@ -88,7 +88,7 @@ fleet_fixture "$FLEET_W" "$(jq -n \
   --argjson hold "$(task_json t-hold /p '"proj"' paused "idling" '{"backlog":{"hold_kind":"captain","hold_reason":"Try the new landing screen and say what you think."}}')" \
   --argjson keyed "$(task_json t-keyed /p '"proj"' working "harness busy" '{"hints":{"open_decisions":["which-auth-provider"]}}')" \
   --argjson actionable "$(task_json t-actionable /p '"proj"' working "harness busy" '{"backlog":{"captain_actionable":true}}')" \
-  --argjson review "$(task_json t-review /p '"proj"' done "checks green: PR ready for review" '{"pr":{"url":"https://example.invalid/pr/1"}}')" \
+  --argjson review "$(task_json t-review /p '"proj"' 'done' "checks green: PR ready for review" '{"pr":{"url":"https://example.invalid/pr/1"}}')" \
   --argjson gate "$(task_json t-gate /p '"proj"' parked "parked at document: 1 finding(s)" '{}')" \
   --argjson external "$(task_json t-external /p '"proj"' paused "waiting for the nightly export" '{}')" \
   --argjson working "$(task_json t-working /p '"proj"' working "validating (fixing)" '{}')" \
@@ -223,6 +223,9 @@ SOCKET="fm-dashboard-live-$$"
 SHIM_DIR=$(mktemp -d "${TMPDIR:-/tmp}/fm-dashboard-live-shim.XXXXXX")
 tmux_cleanup() {
   "$REAL_TMUX" -L "$SOCKET" kill-server >/dev/null 2>&1 || true
+  # kill-server leaves the socket inode behind; remove it so repeated runs do
+  # not accumulate dead sockets in the shared tmux socket directory.
+  rm -f "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/$SOCKET"
   rm -rf "$SHIM_DIR"
   fm_test_cleanup
 }
