@@ -7,7 +7,7 @@
 # for a Lavish session's answer-binding machinery to do here.
 #
 # Usage:
-#   fm-dashboard-serve.sh build <data.json>
+#   fm-dashboard-serve.sh build <data.json> [--live <live.json>]
 #   fm-dashboard-serve.sh path
 #   fm-dashboard-serve.sh stop
 #
@@ -25,12 +25,20 @@
 #            Prints:
 #              dashboard: <path>
 #              served: http://127.0.0.1:<port>/
+#            --live <live.json> additionally injects the board's LIVE WORK half,
+#            validated against the fm-dashboard-live.v1 schema (from
+#            bin/fm-dashboard-live-snapshot.sh). It is optional and independent:
+#            omitted, the live slot is filled with JSON null and the page renders
+#            the project half alone, so a fleet read that could not complete
+#            never costs the captain his project board. Both payloads land in one
+#            page at one URL - the board is deliberately a single surface.
 # path       Print the stable dashboard directory for this home.
 # stop       Stop this home's dashboard server, if one is running.
 #
 # The server is bound to 127.0.0.1 only, never a wider interface, and this
-# script never fetches, pulls, or otherwise mutates any project checkout -
-# bin/fm-dashboard-snapshot.sh already gathered every git fact read-only.
+# script never fetches, pulls, or otherwise mutates any project checkout or task -
+# bin/fm-dashboard-snapshot.sh already gathered every git fact read-only, and
+# bin/fm-dashboard-live-snapshot.sh every fleet fact.
 #
 # FM_DASHBOARD_TEMPLATE overrides the shipped template path (tests only).
 set -eu
@@ -41,7 +49,9 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 
 TEMPLATE="${FM_DASHBOARD_TEMPLATE:-$SCRIPT_DIR/../.agents/skills/dashboard/assets/dashboard-template.html}"
 PLACEHOLDER='__FM_DASHBOARD_DATA__'
+LIVE_PLACEHOLDER='__FM_DASHBOARD_LIVE__'
 DASHBOARD_SCHEMA=fm-dashboard-snapshot.v1
+LIVE_SCHEMA=fm-dashboard-live.v1
 PORT_BASE="${FM_DASHBOARD_PORT_BASE:-4590}"
 PORT_TRIES=50
 
@@ -66,6 +76,37 @@ validate_payload() {  # <data.json>
   jq -e --arg schema "$DASHBOARD_SCHEMA" '
     .schema == $schema and (.projects | type == "array")
   ' "$1" >/dev/null 2>&1
+}
+
+validate_live_payload() {  # <live.json>
+  jq -e --arg schema "$LIVE_SCHEMA" '
+    .schema == $schema and (.tasks | type == "array")
+  ' "$1" >/dev/null 2>&1
+}
+
+# compact_payload <file>: one-line JSON with every `<` escaped. `<` never
+# appears in JSON syntax outside strings, so escaping it keeps the payload valid
+# JSON while making a `</script>` inside any string inert.
+compact_payload() {  # <file>
+  local json
+  json=$(jq -c . "$1") || return 1
+  printf '%s' "${json//</\\u003c}"
+}
+
+# inject_slot <template-in> <out> <placeholder> <json>: replace the one
+# placeholder line with <json>. Fails if the template does not carry exactly one
+# such line, so a template edit can never silently drop a payload.
+inject_slot() {  # <in> <out> <placeholder> <json>
+  local src=$1 out=$2 slot=$3 payload=$4
+  [ "$(grep -cxF "$slot" "$src")" -eq 1 ] || return 2
+  DASHBOARD_JSON="$payload" perl -pe "s/^\\Q$slot\\E\$/\$ENV{DASHBOARD_JSON}/" "$src" > "$out" || return 1
+  ! grep -qxF "$slot" "$out"
+}
+
+# read_slot <built-page> <script-id>: print the JSON text of one embedded data
+# slot, so a page that would fail to parse in the browser fails at build time.
+read_slot() {  # <page> <script-id>
+  sed -n "/<script id=\"$2\" type=\"application\/json\">/,/<\/script>/p" "$1" | sed '1d;$d'
 }
 
 port_free() {  # <port>
@@ -164,42 +205,84 @@ start_server() {  # <dir> -> prints port
 }
 
 command_build() {
-  local data=${1-} board dir json tmp port extracted
-  [ "$#" -eq 1 ] || { usage >&2; exit 2; }
+  local data="" live="" board dir json live_json tmp staged port rc
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --live)
+        [ $# -ge 2 ] || fail "--live requires a value"
+        live=$2
+        shift 2
+        ;;
+      -*) usage >&2; exit 2 ;;
+      *)
+        [ -z "$data" ] || { usage >&2; exit 2; }
+        data=$1
+        shift
+        ;;
+    esac
+  done
+  [ -n "$data" ] || { usage >&2; exit 2; }
   command -v jq >/dev/null 2>&1 || fail "jq is required"
   command -v python3 >/dev/null 2>&1 || fail "python3 is required"
   [ -f "$data" ] || fail "dashboard data does not exist: $data"
   jq empty "$data" 2>/dev/null || fail "dashboard data is not valid JSON: $data"
   validate_payload "$data" || fail "dashboard data does not satisfy $DASHBOARD_SCHEMA: $data"
   [ -f "$TEMPLATE" ] && [ ! -L "$TEMPLATE" ] || fail "dashboard template is missing: $TEMPLATE"
-  [ "$(grep -cxF "$PLACEHOLDER" "$TEMPLATE")" -eq 1 ] \
-    || fail "dashboard template does not carry exactly one data slot: $TEMPLATE"
 
-  json=$(jq -c . "$data") || fail "cannot compact the dashboard data"
-  # `<` never appears in JSON syntax outside strings, so escaping every
-  # occurrence keeps the payload valid JSON while making </script> inert.
-  json=${json//</\\u003c}
+  json=$(compact_payload "$data") || fail "cannot compact the dashboard data"
+
+  # The live half is optional and independent of the project half: with no
+  # --live, the slot is filled with JSON null and the page renders the project
+  # board alone rather than breaking.
+  if [ -n "$live" ]; then
+    [ -f "$live" ] || fail "dashboard live data does not exist: $live"
+    jq empty "$live" 2>/dev/null || fail "dashboard live data is not valid JSON: $live"
+    validate_live_payload "$live" || fail "dashboard live data does not satisfy $LIVE_SCHEMA: $live"
+    live_json=$(compact_payload "$live") || fail "cannot compact the dashboard live data"
+  else
+    live_json=null
+  fi
 
   dir=$(dashboard_dir)
   board=$(dashboard_path)
   (umask 077; mkdir -p "$dir") || fail "cannot create $dir"
   tmp=$(umask 077; mktemp "$dir/.index.XXXXXX") || fail "cannot stage the dashboard"
-  if ! DASHBOARD_JSON="$json" perl -pe "s/^\\Q$PLACEHOLDER\\E\$/\$ENV{DASHBOARD_JSON}/" "$TEMPLATE" > "$tmp"; then
-    rm -f -- "$tmp"
+  staged=$(umask 077; mktemp "$dir/.index.XXXXXX") || { rm -f -- "$tmp"; fail "cannot stage the dashboard"; }
+
+  rc=0
+  inject_slot "$TEMPLATE" "$staged" "$PLACEHOLDER" "$json" || rc=$?
+  if [ "$rc" -eq 2 ]; then
+    rm -f -- "$tmp" "$staged"
+    fail "dashboard template does not carry exactly one data slot: $TEMPLATE"
+  elif [ "$rc" -ne 0 ]; then
+    rm -f -- "$tmp" "$staged"
     fail "cannot inject the dashboard data"
   fi
-  if grep -qxF "$PLACEHOLDER" "$tmp"; then
+
+  rc=0
+  inject_slot "$staged" "$tmp" "$LIVE_PLACEHOLDER" "$live_json" || rc=$?
+  rm -f -- "$staged"
+  if [ "$rc" -eq 2 ]; then
     rm -f -- "$tmp"
-    fail "the dashboard data slot survived injection"
+    fail "dashboard template does not carry exactly one live-work slot: $TEMPLATE"
+  elif [ "$rc" -ne 0 ]; then
+    rm -f -- "$tmp"
+    fail "cannot inject the dashboard live data"
   fi
-  # Round-trip the injected payload back out of the built page, so a page that
+
+  # Round-trip both injected payloads back out of the built page, so a page that
   # would fail to parse in the browser fails here instead.
-  extracted=$(sed -n '/<script id="dashboard-data" type="application\/json">/,/<\/script>/p' "$tmp" \
-    | sed '1d;$d')
-  if ! printf '%s\n' "$extracted" | jq -e --arg schema "$DASHBOARD_SCHEMA" '.schema == $schema' >/dev/null 2>&1; then
+  if ! read_slot "$tmp" dashboard-data \
+    | jq -e --arg schema "$DASHBOARD_SCHEMA" '.schema == $schema' >/dev/null 2>&1; then
     rm -f -- "$tmp"
     fail "the built dashboard does not carry a readable $DASHBOARD_SCHEMA payload"
   fi
+  if ! read_slot "$tmp" dashboard-live \
+    | jq -e --arg schema "$LIVE_SCHEMA" '. == null or .schema == $schema' >/dev/null 2>&1; then
+    rm -f -- "$tmp"
+    fail "the built dashboard does not carry a readable $LIVE_SCHEMA payload"
+  fi
+
   if ! { chmod 0644 "$tmp" && mv -f -- "$tmp" "$board"; }; then
     rm -f -- "$tmp"
     fail "cannot publish the dashboard"
