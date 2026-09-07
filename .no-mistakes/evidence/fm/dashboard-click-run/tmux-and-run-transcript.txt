@@ -1,0 +1,26 @@
+$ tmux list-sessions
+dashboard: 1 windows (created Mon Sep  7 16:24:04 2026)
+
+$ tmux list-windows -t "=dashboard:" -F "#{window_id} #{window_name} active=#{window_active}"
+@0 firstmate active=1
+
+$ tmux list-panes -s -t "=dashboard:" -F "#{window_name} cwd=#{pane_current_path} pid=#{pane_pid} dead=#{pane_dead}"
+firstmate cwd=/tmp/fm-dash-evidence.4mIU8T/home/projects/firstmate pid=3965726 dead=0
+
+$ tmux capture-pane -p -t "=dashboard:"   # what the run script printed
+firstmate dev server starting in /tmp/fm-dash-evidence.4mIU8T/home/projects/firs
+tmate
+
+# --- re-run while that window is alive: focused, never killed/duplicated ---
+$ curl -s -X POST http://127.0.0.1:24591/run -H "Content-Type: application/json" -d '{"name":"firstmate"}'
+{"ok": true, "action": "focused"}
+pane pid before=3965726 after=3965726  (unchanged: the running process was never replaced)
+windows named firstmate: 1  (not duplicated)
+
+# --- unavailable project: refused with the reason the button shows in its tooltip ---
+$ curl -s -X POST .../run -d '{"name":"driftwood"}'
+{"error": "project path is not a directory: /tmp/fm-dash-evidence.4mIU8T/home/projects/driftwood"}
+
+# --- project with no registered run script (no Run control is rendered for it) ---
+$ curl -s -X POST .../run -d '{"name":"quartermaster"}'
+{"error": "project has no registered run script: quartermaster"}
