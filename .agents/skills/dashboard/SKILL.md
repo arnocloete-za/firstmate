@@ -24,9 +24,13 @@ The one exception is launching: clicking a project card's "Run" control, when
 that project has a registered run script, starts that script in a local tmux
 session named `dashboard` (created if it does not already exist), in a window
 named after the project.
-Clicking Run again for a project that already has such a window never kills,
-replaces, or duplicates it - that window may be real work still running, so
-Run only brings it to focus and creates nothing new - see step 3.
+Clicking Run again while that run is still going never kills, replaces, or
+duplicates its window - it may be real work in progress - so Run only brings
+it to focus, creates nothing new, and the button says "Focused" rather than
+claiming a launch it did not make.
+A window a finished run left behind (tmux `remain-on-exit`) is not a running
+run: Run starts a fresh one there and leaves the old window and its output
+alone - see step 3.
 
 ## What it does
 

@@ -424,9 +424,19 @@ __FM_DASHBOARD_DATA__
         body: JSON.stringify({name: p.name})
       }).then(function (res) {
         if (res.ok) {
-          runBtn.textContent = 'Started';
-          runBtn.title = defaultTitle;
-          return;
+          // The server distinguishes starting the script from focusing a run
+          // that was already going. Saying "Started" for the second would
+          // claim a launch that never happened.
+          return res.json().then(function (body) {
+            return (body && body.action === 'focused');
+          }, function () {
+            return false;
+          }).then(function (focused) {
+            runBtn.textContent = focused ? 'Focused' : 'Started';
+            runBtn.title = focused
+              ? p.name + ' was already running - brought its tmux window to focus'
+              : defaultTitle;
+          });
         }
         runBtn.textContent = 'Failed';
         // The server computes a specific reason for every refusal (no run

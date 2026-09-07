@@ -8,16 +8,30 @@ every GET/HEAD request - the ordinary read-only dashboard page and its
 assets. Bound to 127.0.0.1 only by its caller (bin/fm-dashboard-serve.sh),
 and threaded, so one stalled or idle connection cannot wedge the board.
 
+A successful POST /run says which of its two outcomes happened:
+{"ok": true, "action": "launched"} when it started the run script, and
+{"ok": true, "action": "focused"} when the project's run was already going and
+it only brought that window to focus. The two are never collapsed - "Started"
+for a click that started nothing would be a lie.
+
 The one addition: a POST to /run with a JSON body {"name": "<project name>"}
 launches that project's registered run script in a local tmux session named
 exactly "dashboard", in a window named after the project with its working
 directory set to the project's own path. When that session does not exist yet,
 it is created detached already carrying that first window, so a Run never
 leaves a stray bare-shell window behind. If a window with the project's name
-already exists (an earlier run still going, or one the captain is watching),
+is still live (an earlier run still going, or one the captain is watching),
 Run never kills or replaces it - real work in a tmux window is never destroyed
 from here - it just selects that window by its tmux window id so it comes to
 focus, and creates nothing new.
+
+"Live" is decided per pane, not by name: under `remain-on-exit` tmux keeps a
+finished run's window around with a dead pane, and a dead pane is not a run.
+Matching on the name alone would focus that corpse and answer "started"
+forever while the script never ran again. So a window whose panes are all dead
+counts as no live run and Run starts a fresh one - without touching the dead
+window, whose scrollback is the finished run's output. tmux lets two windows
+share a name, so that output survives beside the new run.
 
 Because the server is threaded, launches are serialized under one lock: the
 look-for-an-existing-window and create-it steps are a single check-then-act on
@@ -126,11 +140,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return
 
         try:
-            self._launch(name, path, run_script)
+            action = self._launch(name, path, run_script)
         except Exception as exc:  # noqa: BLE001 - reported to the client, not raised
             self._respond_json(500, {"error": "launch failed: %s" % exc})
             return
-        self._respond_json(200, {"ok": True})
+        self._respond_json(200, {"ok": True, "action": action})
 
     def _run_script_error(self, name, run_script):
         if not run_script:
@@ -174,10 +188,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def _launch(self, name, path, run_script):
         command = shlex.quote(run_script)
         with LAUNCH_LOCK:
-            # list-windows also answers "does the session exist at all" - it
-            # exits non-zero for a missing session or a missing tmux server.
+            # One call answers both questions: it exits non-zero for a
+            # missing session or a missing tmux server, and -s reports every
+            # pane in the session with the window it belongs to, so a
+            # window's panes can be checked for life rather than trusting
+            # its name.
             existing = subprocess.run(
-                ["tmux", "list-windows", "-t", SESSION_TARGET, "-F", "#{window_id}\t#{window_name}"],
+                ["tmux", "list-panes", "-s", "-t", SESSION_TARGET,
+                 "-F", "#{window_id}\t#{window_name}\t#{pane_dead}"],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
                 check=False,
@@ -191,27 +209,36 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     check=True,
                     timeout=TMUX_TIMEOUT,
                 )
-                return
+                return "launched"
             # tmux allows more than one window with the same name in a
             # session - it does not reuse or refuse on a name collision, it
             # just adds another. Run must never kill or replace a window: it
             # may be real, currently-running work the captain is watching.
-            # If one with this project's name already exists, just select it
-            # (bring it to focus) and create nothing new.
+            # So when this project's run is still live, just select it
+            # (bring it to focus) and create nothing new. Any pane still
+            # alive counts as live - something is still running in there.
+            live_window = None
             for line in existing.stdout.splitlines():
-                window_id, _, window_name = line.partition("\t")
-                if window_name == name:
-                    subprocess.run(
-                        ["tmux", "select-window", "-t", window_id],
-                        check=True,
-                        timeout=TMUX_TIMEOUT,
-                    )
-                    return
+                fields = line.split("\t")
+                if len(fields) != 3:
+                    continue
+                window_id, window_name, pane_dead = fields
+                if window_name == name and pane_dead != "1":
+                    live_window = window_id
+                    break
+            if live_window is not None:
+                subprocess.run(
+                    ["tmux", "select-window", "-t", live_window],
+                    check=True,
+                    timeout=TMUX_TIMEOUT,
+                )
+                return "focused"
             subprocess.run(
                 ["tmux", "new-window", "-t", SESSION_TARGET, "-n", name, "-c", path, command],
                 check=True,
                 timeout=TMUX_TIMEOUT,
             )
+            return "launched"
 
     def _respond_json(self, code, obj):
         body = json.dumps(obj).encode("utf-8")

@@ -13,12 +13,14 @@
 # not a directory, and of a cross-site or non-JSON request, and (when tmux is
 # available) its registry-trusted launch plus that a second /run for the same
 # project - including one whose name contains a "." - selects the existing
-# window, that a run script whose path carries a shell metacharacter really
-# runs rather than reporting a launch tmux never made, that the existing
 # window instead of duplicating it, silently no-oping, or ever
-# killing/replacing a still-running process, that the first Run creates the
-# session carrying only the project's own window, and that concurrent Runs can
-# neither duplicate a window nor collide creating the session.
+# killing/replacing a still-running process, and reports that as "focused"
+# rather than as a launch. Also that a window a finished run left behind is
+# not mistaken for a live one, that a run script whose path carries a shell
+# metacharacter really runs rather than reporting a launch tmux never made,
+# that the first Run creates the session carrying only the project's own
+# window, and that concurrent Runs can neither duplicate a window nor collide
+# creating the session.
 #
 # It also proves its own blast radius: the run below is wrapped in a parent
 # phase that parks a canary session on the default tmux socket, runs this
@@ -204,6 +206,15 @@ chmod 0644 "$NOEXEC_SCRIPT"
 # passes every server-side check (absolute, a file, executable), sh then
 # rejects it, and tmux still exits 0 - a launch that never happened reported
 # as success.
+# A run that finishes at once. With remain-on-exit the window it leaves keeps
+# the project's name but has a dead pane - not a live run.
+DEAD_MARKER="$TMP_ROOT/dead.marker"
+cat > "$TMP_ROOT/deadtest.sh" <<EOF
+#!/usr/bin/env bash
+echo ran >> "$DEAD_MARKER"
+EOF
+chmod +x "$TMP_ROOT/deadtest.sh"
+
 META_MARKER="$TMP_ROOT/meta.marker"
 META_SCRIPT="$TMP_ROOT/meta run(1).sh"
 cat > "$META_SCRIPT" <<EOF
@@ -256,6 +267,18 @@ cat > "$DATA" <<JSON
       "last_commit": {"date": "2026-01-01T00:00:00Z", "author": "alice", "subject": "init"},
       "commits": [],
       "run_script": "$TMP_ROOT/dottedtest.sh"
+    },
+    {
+      "name": "deadtest",
+      "path": "$RUNTEST_DIR",
+      "available": true,
+      "clean": true,
+      "branch": "main",
+      "default_branch": "main",
+      "on_default": true,
+      "last_commit": {"date": "2026-01-01T00:00:00Z", "author": "alice", "subject": "init"},
+      "commits": [],
+      "run_script": "$TMP_ROOT/deadtest.sh"
     },
     {
       "name": "metatest",
@@ -588,9 +611,13 @@ else
   # replace that window - it may be real, currently-running work. It should
   # select the existing window and leave its process completely untouched.
   FIRST_RUN_PID=$(tmux list-panes -t "$RUN_WID" -F '#{pane_pid}')
-  RUN_CODE2=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$URL3/run" \
+  RUN_BODY2=$(curl -s -w '\n%{http_code}' -X POST "$URL3/run" \
     -H 'Content-Type: application/json' -d '{"name":"runtest"}')
+  RUN_CODE2=$(printf '%s\n' "$RUN_BODY2" | tail -n1)
   [ "$RUN_CODE2" = "200" ] || fail "a second /run for the same project should also succeed, got $RUN_CODE2"
+  RUN_ACTION2=$(printf '%s\n' "$RUN_BODY2" | sed '$d' | jq -r '.action // ""')
+  [ "$RUN_ACTION2" = "focused" ] \
+    || fail "a second /run for a live run should report it focused an existing window, got '$RUN_ACTION2'"
 
   sleep 0.3
   SECOND_RUN_PID=$(tmux list-panes -t "$RUN_WID" -F '#{pane_pid}' 2>/dev/null)
@@ -656,6 +683,55 @@ else
   [ -n "$(dashboard_window_ids metatest)" ] \
     || fail "the shell-quoted run script's tmux window did not survive its launch"
   pass "/run runs a script whose absolute path carries a shell metacharacter instead of reporting a launch that never happened"
+
+  # A window a finished run left behind must not be mistaken for a live run:
+  # the click has to start a fresh run and say so, while the finished run's
+  # window and its output stay untouched.
+  tmux set-option -g remain-on-exit on >/dev/null 2>&1 \
+    || fail "could not enable remain-on-exit on the test tmux server"
+  DEAD_BODY=$(curl -s -w '\n%{http_code}' -X POST "$URL3/run" \
+    -H 'Content-Type: application/json' -d '{"name":"deadtest"}')
+  [ "$(printf '%s\n' "$DEAD_BODY" | tail -n1)" = "200" ] \
+    || fail "the first /run for deadtest should succeed, got: $DEAD_BODY"
+  [ "$(printf '%s\n' "$DEAD_BODY" | sed '$d' | jq -r '.action // ""')" = "launched" ] \
+    || fail "the first /run for deadtest should report a launch, got: $DEAD_BODY"
+  waited=0
+  while [ ! -f "$DEAD_MARKER" ] && [ "$waited" -lt 50 ]; do
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  [ -f "$DEAD_MARKER" ] || fail "deadtest's run script never ran"
+  # Wait for the pane to actually be dead, so the next click sees a corpse.
+  waited=0
+  while [ "$waited" -lt 50 ]; do
+    [ "$(tmux list-panes -s -t '=dashboard' -F $'#{window_name}\t#{pane_dead}' 2>/dev/null \
+      | awk -F'\t' '$1 == "deadtest" && $2 == 1 { print 1; exit }')" = "1" ] && break
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  DEAD_WID=$(tmux list-panes -s -t '=dashboard' -F $'#{window_id}\t#{window_name}\t#{pane_dead}' 2>/dev/null \
+    | awk -F'\t' '$2 == "deadtest" && $3 == 1 { print $1; exit }')
+  [ -n "$DEAD_WID" ] \
+    || fail "remain-on-exit should have left a dead deadtest window behind"
+
+  DEAD_BODY2=$(curl -s -w '\n%{http_code}' -X POST "$URL3/run" \
+    -H 'Content-Type: application/json' -d '{"name":"deadtest"}')
+  [ "$(printf '%s\n' "$DEAD_BODY2" | tail -n1)" = "200" ] \
+    || fail "a /run over a finished run should succeed, got: $DEAD_BODY2"
+  [ "$(printf '%s\n' "$DEAD_BODY2" | sed '$d' | jq -r '.action // ""')" = "launched" ] \
+    || fail "a /run over a finished run must report a fresh launch, not a focus, got: $DEAD_BODY2"
+  waited=0
+  while [ "$(grep -c . "$DEAD_MARKER")" -lt 2 ] && [ "$waited" -lt 50 ]; do
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  [ "$(grep -c . "$DEAD_MARKER")" -ge 2 ] \
+    || fail "the run script should have run a second time, marker has $(grep -c . "$DEAD_MARKER") line(s)"
+  tmux list-panes -s -t '=dashboard' -F '#{window_id}' 2>/dev/null | grep -qxF "$DEAD_WID" \
+    || fail "the finished run's window $DEAD_WID was destroyed; its output should have been preserved"
+  pass "/run treats a finished run's leftover window as no live run, starts a fresh one, and preserves the old output"
+
+  tmux set-option -g remain-on-exit off >/dev/null 2>&1 || true
 
   # <project name> <label>: fire six /run requests at once. Every one must
   # answer 200, and exactly one window must exist afterwards - an unserialized

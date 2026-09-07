@@ -113,20 +113,23 @@ find_free_port() {  # <base>
 #             can only ever fail against it: it can be stopped and replaced,
 #             never reused
 #   nothing - <pid> is dead, or alive but belongs to something else
-# Best-effort cmdline check, Linux /proc only; where /proc is unreadable a
-# live recorded pid is taken at its word as "current", as it always was.
+# The command line comes from `ps`, which reports it the same way on Linux and
+# Darwin - reading /proc instead would classify every pid as "current" on
+# macOS, leaving the legacy branch below dead code there. COLUMNS keeps ps from
+# truncating the line. If ps cannot report at all, a live recorded pid is taken
+# at its word as "current", as it always was.
 dashboard_pid_kind() {
   local pid=$1 port=$2 cmdline
   kill -0 "$pid" 2>/dev/null || return 0
-  if [ -r "/proc/$pid/cmdline" ]; then
-    cmdline=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)
-    case "$cmdline" in
-      *fm-dashboard-server.py*"$port"*) printf 'current\n' ;;
-      *http.server*"$port"*) printf 'legacy\n' ;;
-    esac
+  cmdline=$(COLUMNS=10000 LC_ALL=C ps -p "$pid" -o command= 2>/dev/null) || cmdline=""
+  if [ -z "$cmdline" ]; then
+    printf 'current\n'
     return 0
   fi
-  printf 'current\n'
+  case "$cmdline" in
+    *fm-dashboard-server.py*"$port"*) printf 'current\n' ;;
+    *http.server*"$port"*) printf 'legacy\n' ;;
+  esac
 }
 
 # wait_pid_gone <pid>: bounded wait (2s) for <pid> to exit.
