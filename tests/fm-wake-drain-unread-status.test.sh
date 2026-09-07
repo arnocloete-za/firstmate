@@ -16,6 +16,12 @@ DRAIN="$ROOT/bin/fm-wake-drain.sh"
 
 TMP_ROOT=$(fm_test_tmproot fm-wake-drain-unread-status-tests)
 
+# Ask the production classifier whether one line is captain-relevant, through a
+# subshell that sources the real library rather than a second copy of the rule.
+captain_relevant() {  # <status-line>
+  bash -c '. "$1/bin/fm-classify-lib.sh"; status_is_captain_relevant "$2"' _ "$ROOT" "$1"
+}
+
 # Establish the durable last-presentation cursor by draining once over a
 # bootstrap line so later appends are "new since last drain".
 prime_cursor() {  # <state> <status-file>
@@ -323,6 +329,55 @@ test_open_decisions_fold_is_unchanged() {
   pass "OPEN DECISIONS still folds needs-decision/blocked independently of unread notes"
 }
 
+# The durable echo of a ruling the captain gave in a worker's own terminal.
+# Two properties matter and they pull in opposite directions:
+#
+#   - the echo must REACH firstmate, which is what the unread surface is for; and
+#   - it must not be read as a captain-relevant TRANSITION, because the captain's
+#     own words routinely quote the exact legacy free-text vocabulary
+#     ("merge it", "the PR looks ready", "checks green") that a bare line
+#     without a verb is still matched against. A quoted instruction that fakes
+#     a terminal outcome would have firstmate reporting work as landed on the
+#     strength of the captain asking for it.
+#
+# The keyed close is the other half: without it firstmate keeps re-raising a
+# question the captain answered in the pane.
+test_captain_pane_echo_surfaces_without_faking_a_transition() {
+  local dir state out status
+  dir=$(make_case captain-pane-echo)
+  state="$dir/state"
+  out="$dir/drain.out"
+  status="$state/task-conned.status"
+
+  # A worker's own decision, then the captain's ruling echoed back in his words.
+  printf 'needs-decision [key=api-shape]: pick REST or RPC\n' > "$status"
+  printf 'note: captain in the pane: go with REST, then merge it once checks green\n' >> "$status"
+
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" \
+    || fail "drain failed on a captain-pane echo"
+  grep -F 'task-conned note: captain in the pane: go with REST, then merge it once checks green' "$out" >/dev/null \
+    || fail "the captain-pane echo did not reach the unread surface: $(cat "$out")"
+  captain_relevant 'note: captain in the pane: go with REST, then merge it once checks green' \
+    && fail "a note echoing the captain's words was read as a captain-relevant transition"
+  captain_relevant 'note: captain in the pane: that PR ready to go' \
+    && fail "a note quoting PR-ready prose was read as a captain-relevant transition"
+  captain_relevant 'done: PR ready' \
+    || fail "the legacy free-text captain-relevance path regressed"
+  # A note is informational, never current state.
+  grep -F 'task-conned [key=api-shape] needs-decision: pick REST or RPC' "$out" >/dev/null \
+    || fail "the echo closed the decision on its own, which only a keyed resolved line may do: $(cat "$out")"
+
+  # The keyed close, written by the worker because the captain answered in the
+  # pane rather than through firstmate.
+  printf 'resolved [key=api-shape]: captain in the pane: go with REST\n' >> "$status"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" \
+    || fail "drain failed after the pane answer closed the decision"
+  if grep -F 'OPEN DECISIONS' "$out" >/dev/null; then
+    fail "a decision the captain answered in the pane still printed as open: $(cat "$out")"
+  fi
+  pass "a captain-pane echo reaches the unread surface, fakes no transition, and its keyed close closes the decision"
+}
+
 test_empty_queue_does_not_swallow_later_signal_annotation() {
   local dir state out status
   dir=$(make_case delayed-signal-annotation)
@@ -385,5 +440,6 @@ test_retired_task_id_starts_new_status_unread
 test_weak_identity_still_presents_and_advances
 test_snapshot_failure_is_visible
 test_open_decisions_fold_is_unchanged
+test_captain_pane_echo_surfaces_without_faking_a_transition
 test_empty_queue_does_not_swallow_later_signal_annotation
 test_routine_working_and_covered_done_stay_silent_on_the_empty_queue

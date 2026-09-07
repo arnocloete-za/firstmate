@@ -74,7 +74,11 @@ unset _fm_classify_nounset
 # legacy lines that lack a standard terminal verb. status_is_captain_relevant is
 # verb-aware: a nonterminal working: or paused: line never becomes captain-relevant
 # merely because its prose contains one of those tokens (for example
-# "working: rebased onto merged #76").
+# "working: rebased onto merged #76"). `note:` is in that same nonterminal set,
+# and for the same reason twice over: its whole purpose is the informational
+# unread surface below rather than a transition, and a worker echoing the
+# captain's own pane words into it ("note: captain: merge it once checks are
+# green") quotes exactly the vocabulary those legacy tokens match.
 FM_CLASSIFY_CAPTAIN_RE_DEFAULT='done:|needs-decision:|blocked:|failed:|PR ready|checks green|ready in branch|merged'
 
 # The deliberate-external-wait verb. A crew (or firstmate steering it) appends
@@ -127,17 +131,17 @@ status_is_terminal_verb() {
 }
 
 # 0 if the given (last) status line matches a captain-relevant verb.
-# Verb-aware by default: terminal verbs always match; nonterminal progress verbs
-# (working, resolved, captain-held) and paused never match from free-text prose;
-# only lines without those leading verbs may still match free-text tokens for
-# legacy bare lines such as "merged" or "PR ready".
+# Verb-aware by default: terminal verbs always match; nonterminal verbs
+# (working, resolved, captain-held, note) and paused never match from free-text
+# prose; only lines without those leading verbs may still match free-text tokens
+# for legacy bare lines such as "merged" or "PR ready".
 status_is_captain_relevant() {
   local line=$1 verb
   [ -n "$line" ] || return 1
   status_is_paused "$line" && return 1
   verb=$(status_line_verb "$line")
   case "$verb" in
-    working|resolved|captain-held|"${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}")
+    working|resolved|captain-held|note|"${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}")
       return 1
       ;;
   esac

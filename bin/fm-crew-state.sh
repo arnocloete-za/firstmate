@@ -17,6 +17,11 @@
 #
 #   state: <working|parked|done|blocked|paused|failed|unknown> · source: <run-step|pane|status-log|remote-endpoint|none> · <detail>
 #
+# While the captain is working in that task's own terminal, one further segment
+# is appended - "captain has the conn (<n>s)" - so a worker in the middle of a
+# conversation with him is never read as a stuck one. It is additive and never
+# changes the state or its source; bin/fm-conn-lib.sh owns the flag.
+#
 # Logic, in order:
 #   1. Resolve worktree + backend target + kind from state/<id>.meta. A meta
 #      recording remote_host= is a remote secondmate: its worktree and endpoint
@@ -66,6 +71,8 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 . "$SCRIPT_DIR/fm-busy-lib.sh"
 # shellcheck source=bin/fm-nm-run-lib.sh
 . "$SCRIPT_DIR/fm-nm-run-lib.sh"
+# shellcheck source=bin/fm-conn-lib.sh
+. "$SCRIPT_DIR/fm-conn-lib.sh"
 
 ID=${1:-}
 [ -n "$ID" ] || { echo "usage: fm-crew-state.sh <id>" >&2; exit 2; }
@@ -83,9 +90,20 @@ case "$FM_CREW_STATE_RUNS_LIMIT" in ''|*[!0-9]*) FM_CREW_STATE_RUNS_LIMIT=200 ;;
 SEP=' · '
 
 # Emit the one canonical line and exit 0. Detail is optional.
+#
+# A task the captain is working in himself carries one extra trailing segment.
+# It is appended rather than substituted because the conn is orthogonal to what
+# the crew is DOING: the state and its source stay exactly what the run-step,
+# pane, or log says, and the segment only stops a reader from mistaking a
+# worker mid-conversation with the captain for one that has stopped answering.
+# bin/fm-conn-lib.sh owns the phrase, the flag, and its bounded expiry, so a
+# lapsed conn simply stops appearing here.
 emit() {  # <state> <source> [detail]
-  local line="state: $1${SEP}source: $2"
+  local line="state: $1${SEP}source: $2" conn
   [ -n "${3:-}" ] && line="$line${SEP}$3"
+  if conn=$(fm_conn_label "$STATE" "$ID"); then
+    line="$line${SEP}$conn"
+  fi
   printf '%s\n' "$line"
   exit 0
 }

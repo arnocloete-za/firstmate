@@ -1858,6 +1858,60 @@ test_nonterminal_stale_not_working_surfaced() {
   pass "a not-provably-working non-terminal stale is surfaced immediately (never left to wait out the timer)"
 }
 
+# --- captain at the conn: the whole task is stood off for that poll ----------
+# A worker waiting for the captain's next message renders nothing, so its pane
+# is indistinguishable from a wedge. Without the stand-off, firstmate is nagged
+# about a worker the captain is actively talking to - and then both of them
+# steer it. The stand-off must be a DEFERRAL: the same pane surfaces normally
+# once the flag lapses, because a flag that suppressed supervision permanently
+# would be worse than the interleaving it prevents.
+test_conn_held_stale_stood_off_then_surfaced_when_it_lapses() {
+  local dir state fakebin out capture_file window key pane_hash sig pid
+  dir=$(make_case conn-stale); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"
+  window="test:fm-conned"
+  printf 'idle prompt, waiting on the captain' > "$capture_file"
+  printf 'window=%s\nkind=ship\n' "$window" > "$state/conned.meta"
+  printf 'working: implementing\n' > "$state/conned.status"
+  sig=$(seen_sig "$state/conned.status"); printf '%s' "$sig" > "$state/.seen-conned_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  pane_hash=$(hash_text "idle prompt, waiting on the captain")
+  printf '%s' "$pane_hash" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+  # Not provably working: without the conn this exact fixture surfaces at once
+  # (test_nonterminal_stale_not_working_surfaced above).
+  export FM_FAKE_CREW_STATE='state: unknown · source: none · no current-state source available'
+  # A stale wedge timer from before the captain arrived must not be allowed to
+  # fire the moment he leaves.
+  printf '%s\n' "$(( $(date +%s) - 99999 ))" > "$state/.stale-since-$key"
+  printf '2\n' > "$state/.wedge-escalations-$key"
+  date +%s > "$state/conned.conn"
+
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_STALE_ESCALATE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_poll_cycle "$state" "$pid" \
+    || fail "the watcher surfaced a task the captain has the conn on:"$'\n'"$(cat "$out")"
+  [ ! -s "$state/.wake-queue" ] \
+    || { reap "$pid"; fail "the stand-off queued a wake:"$'\n'"$(cat "$state/.wake-queue")"; }
+  [ ! -e "$state/.stale-since-$key" ] \
+    || { reap "$pid"; fail "the stand-off left a pre-conn wedge timer armed"; }
+  [ ! -e "$state/.wedge-escalations-$key" ] \
+    || { reap "$pid"; fail "the stand-off left a pre-conn escalation count armed"; }
+  [ "$(cat "$state/.stale-$key" 2>/dev/null || true)" != "$pane_hash" ] \
+    || { reap "$pid"; fail "the stand-off classified the stale hash instead of deferring it"; }
+
+  # The captain leaves. The same unchanged pane must now surface.
+  printf '%s\n' "$(( $(date +%s) - 100000 ))" > "$state/conned.conn"
+  wait_for_exit "$pid" 100 \
+    || { reap "$pid"; fail "a lapsed conn did not return the idle pane to ordinary supervision"; }
+  grep -Fx "stale: $window" "$out" >/dev/null \
+    || fail "the deferred stale never surfaced after the conn lapsed:"$'\n'"$(cat "$out")"
+  pass "watcher: a task under the conn is stood off with its wedge clock reset, and surfaces once the conn lapses"
+}
+
 # --- non-terminal stale, crew DECLARED a pause: absorbed, re-surfaced on a long
 #     cadence, never wedge-escalated ------------------------------------------
 # The live 2026-07-09/10 case: a crew intentionally held awaiting an upstream tool
@@ -4052,6 +4106,7 @@ test_busy_declared_pause_is_rechecked_not_wedge_escalated
 test_afk_busy_declared_pause_hands_off_plain_stale
 test_afk_busy_declared_pause_ticking_pane_hands_off_once
 test_nonterminal_stale_not_working_surfaced
+test_conn_held_stale_stood_off_then_surfaced_when_it_lapses
 test_nonterminal_stale_paused_absorbed_then_resurfaced
 test_exited_declared_pause_is_bounded_but_live_gate_surfaces
 test_absorbed_replacement_wait_does_not_inherit_the_old_throttle

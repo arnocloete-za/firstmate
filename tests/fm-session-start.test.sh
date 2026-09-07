@@ -1347,6 +1347,49 @@ EOF
   pass "herdr endpoint liveness is reported per task: alive for a live pane, dead for a gone one"
 }
 
+# A recovering session must be told which task the captain is working in
+# himself, right beside that task's endpoint: without it, a quiet pane reads as
+# a stuck worker, and a task supervision is standing off becomes an invisible
+# hole. Silent when nothing holds the conn, and silent again once it lapses.
+test_conn_is_reported_beside_the_endpoint() {
+  local rec root home fakebin out
+  rec=$(new_world conn-digest)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  make_fake_tmux "$fakebin" "fm-sess:live-window"
+
+  printf 'window=fm-sess:live-window\nkind=ship\n' > "$home/state/task-live.meta"
+
+  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  assert_not_contains "$out" "captain has the conn" \
+    "the digest must stay silent when no task is under the conn"
+
+  # The reported age is measured when the digest runs, not when the record was
+  # written, so assert the shape and a lower bound rather than an exact second.
+  printf '%s\n' "$(( $(date +%s) - 30 ))" > "$home/state/task-live.conn"
+  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  assert_contains "$out" "captain has the conn (" \
+    "the digest must report the conn and how long it has been held"
+  local age
+  age=$(printf '%s\n' "$out" | sed -n 's/.*captain has the conn (\([0-9]*\)s).*/\1/p' | head -1)
+  case "$age" in
+    ''|*[!0-9]*) fail "the digest did not report a numeric conn age: $out" ;;
+  esac
+  [ "$age" -ge 30 ] || fail "the digest reported a conn age below the record's own age: ${age}s"
+  assert_contains "$out" "supervision is standing off this task" \
+    "the digest must say what the conn means for supervision"
+
+  printf '%s\n' "$(( $(date +%s) - 100000 ))" > "$home/state/task-live.conn"
+  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  assert_not_contains "$out" "captain has the conn" \
+    "a lapsed conn must stop being reported"
+
+  pass "session start: a task the captain holds is reported beside its endpoint and lapses on its own"
+}
+
 # --- composition: real scripts run, not reimplemented ------------------------
 
 test_composition_invokes_real_scripts() {
@@ -2573,6 +2616,7 @@ test_status_tail_line_cap
 test_orphan_status_logs_are_printed
 test_endpoint_liveness_tmux
 test_endpoint_liveness_herdr
+test_conn_is_reported_beside_the_endpoint
 test_composition_invokes_real_scripts
 test_branch_outcome_replay_respects_captain_barrier_and_lease_sweep
 test_non_pi_session_start_leaves_branch_state_untouched

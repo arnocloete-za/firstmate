@@ -11,6 +11,10 @@
 # either a paused: external wait or a verified captain-held transfer, is the
 # separate idle absorb case and re-surfaces only on its long bounded cadence,
 # although its initial no-verb status signal still surfaces in normal mode.
+# A task the captain is working in himself is stood off entirely for that poll -
+# no steering-inbox re-ring, no stale or wedge escalation - because he is that
+# worker's second supervisor while he is there (conn_stand_off; the flag,
+# its writers, and its bounded expiry are bin/fm-conn-lib.sh's).
 # While state/.afk exists, the daemon owns triage and this watcher queues and exits
 # on every wake. Printed reason lines:
 #   signal: <file>...      status/turn-end signals, surfaced when a listed status
@@ -133,6 +137,11 @@ mkdir -p "$STATE"
 # gate and the wake emission (inbox_steer_check below).
 # shellcheck source=bin/fm-task-inbox-lib.sh
 . "$SCRIPT_DIR/fm-task-inbox-lib.sh"
+# Captain-at-the-conn stand-off: bin/fm-conn-lib.sh owns the flag, its writers,
+# and its bounded expiry; this watcher only stops taking initiative on a task
+# the captain is working in himself (conn_stand_off below).
+# shellcheck source=bin/fm-conn-lib.sh
+. "$SCRIPT_DIR/fm-conn-lib.sh"
 
 WATCH_LOCK="$STATE/.watch.lock"
 WATCH_PATH="$SCRIPT_DIR/fm-watch.sh"
@@ -747,6 +756,38 @@ wedge_defer_writing() {  # <window> <since-file> <triage-label> <idle-age>
 clear_write_tracking() {  # <window-key>
   local key=$1
   rm -f "$STATE/.writing-since-$key" "$STATE/.writing-resurfaced-$key"
+}
+
+# Stand this watcher off ONE task the captain is working in himself
+# (bin/fm-conn-lib.sh owns the flag and its bounded expiry). 0 when the task is
+# under the conn and this poll must take no initiative on it, 1 otherwise.
+#
+# The two initiatives that stop are exactly the ones that would put a second
+# supervisor on a worker mid-conversation: re-ringing its steering inbox, and
+# raising its stale or wedge escalation. A worker waiting for the captain's
+# next message renders nothing, so without this its idle pane cannot be told
+# apart from a wedge and firstmate is nagged about a worker the captain is
+# actively talking to.
+#
+# Nothing is dropped, only deferred. The idle timer and escalation count are
+# reset (never the .stale- suppressor, so a hash already classified is not
+# re-surfaced), so when the flag lapses the wedge clock is measured from the
+# captain's departure rather than from before he arrived - a pane that is
+# genuinely stopped then surfaces one wedge threshold later, and an
+# unacknowledged instruction resumes its ladder. Status appends are untouched:
+# they are how firstmate learns what the captain settled, so a captain-relevant
+# event from a conn-held task still surfaces through the ordinary signal path.
+#
+# Applies in away mode too: the flag means a human is at that terminal, which
+# is a stronger fact than the away declaration, and the bounded expiry keeps
+# even a contradictory flag self-correcting.
+conn_stand_off() {  # <window> <task> <window-key>
+  local win=$1 task=$2 key=$3 age
+  age=$(fm_conn_age "$STATE" "$task") || return 1
+  rm -f "$STATE/.stale-since-$key" "$STATE/.wedge-escalations-$key"
+  clear_write_tracking "$key"
+  triage_log "stood off $win (captain has the conn on $task, ${age}s)"
+  return 0
 }
 
 # Repeat-poll wedge-timer bookkeeping for an already-classified stale hash
@@ -1810,10 +1851,16 @@ EOF
   while IFS= read -r w; do
     kind=$(window_kind "$w")
     task=$(window_to_task "$w" "$STATE")
+    key=$(window_key "$w")
+    # The captain is working in this task's own terminal: take no initiative on
+    # it this poll, ahead of both the steering-inbox ladder and the pane
+    # capture. conn_stand_off owns what that defers and why.
+    if [ -n "$task" ] && conn_stand_off "$w" "$task" "$key"; then
+      continue
+    fi
     # Steering-inbox loss detection runs before the secondmate stale
     # exemption below, because a mate's steers land in an inbox too.
     [ -z "$task" ] || inbox_steer_check "$w" "$task"
-    key=$(window_key "$w")
     last=$(last_status_line "$STATE/$task.status")
     if ! status_is_paused_or_captain_held "$last" && [ -e "$STATE/.paused-$key" ]; then
       clear_pause_tracking "$key"

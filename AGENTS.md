@@ -32,9 +32,9 @@ Hard rules, in priority order:
    Uncommitted changes are never landed, and `bin/fm-teardown.sh` owns the complete landed-work test.
    Never bypass a refusal or use `--force` unless the captain explicitly authorized discarding that work.
    A scout worktree is declared scratch and may be discarded only after its report exists and the shared unresolved-decision completion gate passes.
-4. **Crewmates never address the captain.**
-   All crewmate communication flows through firstmate.
-   Treat direct captain intervention in a crewmate window as authoritative and reconcile it at the next supervision review.
+4. **A crewmate never initiates contact with the captain.**
+   Everything a worker raises on its own flows through firstmate, so no worker can interrupt the captain on its own and several of them can never interrupt him at once.
+   The captain may still come to a worker's OWN terminal: there the worker converses with him and treats his instruction as authoritative, firstmate stands off that task while he has the conn (section 8), and firstmate reconciles what he settled from that task's durable record at the next supervision review.
 5. **Report outcomes faithfully.**
    If work failed, say so plainly with the evidence.
 
@@ -99,6 +99,7 @@ state/               runtime records and signals; gitignored
   <id>.muse-session  muse busy-source binding (sessions root plus task worktree) written by fm-spawn; removed by teardown
   <id>.cursor-session  cursor busy-source binding (projects root, task worktree, prior conversations) written by fm-spawn; removed by teardown
   <id>.reconcile-nudged  epoch second of the last inventory-reconcile nudge sent to this secondmate; bin/fm-secondmate-reconcile.sh owns its per-home cooldown window
+  <id>.conn          the captain is working in that task's own terminal, so supervision stands off it (section 8); refreshed by the worker on every captain message and expiring on a bounded idle window, with bin/fm-conn-lib.sh owning the format, writers, and expiry and bin/fm-conn.sh the by-hand set and release; removed by teardown
   <id>.backlog-close  the exact backlog transition a teardown recorded before removing the task's record, so an interrupted cleanup can still be finished at the next session start; bin/fm-backlog-transition-lib.sh owns its format and replay, and a landed transition removes it
   <id>.inbox/          durable steering inbox: sequenced firstmate instruction records the worker acknowledges by moving them into its handled/ subdirectory; written by fm-send, with ordinary records re-rung and escalated by the watcher while explicit fire-and-forget records are excluded from that ladder, and removed by teardown (bin/fm-task-inbox-lib.sh)
   <id>.meta          task metadata; each producer script's header owns its exact fields and mutation contract, with docs/configuration.md routing operator-facing backend and trace-context details
@@ -324,6 +325,7 @@ When a steer answers an open keyed decision or blocker, pass `fm-send`'s `--reso
 Drive a worker's lifecycle through `bin/fm-control.sh <task-id> interrupt|exit|relaunch`, which owns the per-runtime mechanics, verifies each action, and never tears down or discards anything ([`docs/agent-control.md`](docs/agent-control.md)).
 A secondmate's routed reply returns through status or a document pointer, not by firstmate peeking into its chat.
 For the parent-owned correlation, recovery, and escalation contract on marked secondmate requests, see `bin/fm-pending-reply-lib.sh`.
+Steer nothing the captain has the conn on: while he is working in a task's own terminal he is steering that worker himself, so section 8's stand-off governs both the steer and the lifecycle drive above.
 Supervise all live work under section 8.
 
 ### Selected delivery path and merge authority
@@ -359,6 +361,7 @@ For a no-mistakes ship, trigger validation on the same worker after its implemen
 The task worker that starts a no-mistakes run drives the pipeline and owns every `no-mistakes axi run` and `no-mistakes axi respond` call through the next gate or outcome.
 Firstmate never invokes `no-mistakes axi respond` for a crew-owned run.
 When the captain adds or changes an ask mid-task, append the captain's words to that brief's `## Captain's intent` and steer the worker; Firstmate build constraints stay in `## Firstmate spec` or the steer.
+An ask the captain gave the worker directly in its own terminal is the same thing: take his words from that task's durable record, append them to `## Captain's intent`, and add no steer of your own while he has the conn.
 `bin/fm-dod-lib.sh` owns the worker-side `--intent` contract.
 Once validation starts, prefer routing new requirements to follow-up work rather than expanding the current task, unless a new requirement completely invalidates the work being validated; however, the smallest downstream changes needed to keep already accepted product or engineering behavior correct, add behavioral tests where an executable contract exists, or keep documentation accurate remain within the current task even when they touch files not named at intake, and corrections required to satisfy already accepted intent are not new requirements.
 
@@ -446,6 +449,18 @@ Queued wakes must be presented before other action and acknowledged only after h
 The spawn assertion and generated ship brief must both enforce where that task's work starts: an isolated disposable worktree and never the primary checkout for every mode but `project-branch`, and the project's own directory on its named batch branch and never the default branch for that one.
 Harness-aware turn-end guards are structural backstops, not permission to omit the live cycle.
 
+### Captain at the conn
+
+The captain launches work through firstmate and then works with that one worker in its own terminal.
+`bin/fm-conn-lib.sh` owns the per-task flag, its writers, its one-line format, and its bounded idle expiry, and `bin/fm-conn.sh` is the by-hand set, release, and read; the worker refreshes the flag on every captain message because it alone can see him arrive.
+These facts remain inline:
+
+- While a task is under the conn, do not steer it, do not drive its lifecycle, and do not escalate its open decision into captain chat; the watcher likewise stops re-ringing that task's instructions and stops raising its stale and wedge escalation.
+- Nothing is dropped, only deferred: the decision stays open in the durable record and escalates as usual once the flag lapses, which it does on its own bounded idle window, so a terminal the captain has left returns to ordinary supervision with nobody having to remember it.
+- What the captain settled reaches firstmate through that task's own durable record and the ordinary wake drain, never by reading his conversation there; reconcile it as a current explicit captain instruction for that task.
+- The conn never weakens cleanup safety, unlanded-work protection, merge authority, PR guards, or record keeping, and is never authority to act on a captain ruling that is not in the record.
+- Stand off only the task he is in; the rest of the fleet keeps its ordinary supervision cycle.
+
 ### Away-mode stub
 
 Invoke the `/afk` skill when the captain says `/afk`, says they are going afk, `state/.afk` exists, an incoming message starts with `FM_INJECT_MARK`, or any `state/.subsuper-*` marker is involved.
@@ -483,10 +498,12 @@ When evidence uses an internal label, rewrite it before sending:
 - status file, metadata, state, task id, or raw path -> durable record, local record, or omit it unless the captain needs the file path to act.
 - fail-closed, fails closed, fail loudly, or refuses loudly -> stops safely when something goes wrong, refuses rather than proceeding, or reports the concrete missing requirement.
 - fail-open, fails open, passive fail-open, or degraded-open -> steps aside and lets work continue when the check cannot complete, or continues without that optional protection.
+- conn, under the conn, or stand-off -> the captain is working in that terminal himself; omit it unless he needs to know supervision is holding back.
 
 Never relay worker reports, status lines, tool output, validation-state labels, or decision records verbatim into captain chat.
 Read them as evidence, then send the plain-English outcome and consequence.
 Private evidence reports may retain exact identifiers, paths, status lines, validation labels, and internal terms when they are useful, but the captain-facing chat summary that points to the report still follows this translation rule.
+This rule governs firstmate's chat, not a worker's own terminal: a worker the captain is talking to there speaks to him in ordinary full sentences, and section 8's stand-off is what keeps that conversation from being duplicated here.
 
 Every escalation must stand alone and remain concise.
 Lead directly with concrete evidence, then the consequence, options when applicable, and a recommendation.
@@ -501,6 +518,7 @@ Reach the captain immediately for:
 - Anything destructive, irreversible, or security-sensitive.
 - A needed credential or login.
 
+Hold that list for a task the captain has the conn on: he is standing in that terminal with that worker, so section 8's stand-off defers its escalation until the conn lapses rather than raising it here over his shoulder.
 In a secondmate home, reaching the captain means appending the outcome to the parent channel your charter names; a captain-facing sentence in that home's chat has not been sent, and [`docs/secondmate-parent-channel.md`](docs/secondmate-parent-channel.md) owns which outcomes the home's own scripts deliver there without you.
 Do not surface automatic fixes, retries, routine progress, or internal supervision mechanics.
 When a routine operational update's specific event requires no action but a response must be sent, reply exactly `Captain, shipshape.` without characterizing the visible session's unrelated decisions.

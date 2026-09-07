@@ -95,6 +95,13 @@
 # an explicit backend-target escape-hatch target, and the --key path are never
 # marked - their behavior is unchanged.
 #
+# Captain-at-the-conn advisory: when the resolved task is one the captain is
+# working in himself (bin/fm-conn-lib.sh), a loud notice goes to stderr naming
+# the task and how long he has held it, and the message is still sent. It is an
+# advisory, not a refusal, because steering is the path a real blocker depends
+# on and the captain may have asked for the message himself; the honest failure
+# mode here is a supervisor who is told, not a steer that cannot be delivered.
+#
 # Parent-owned pending-reply expectation: every newly marked secondmate request
 # except an explicit --fire-and-forget delivery receives a privacy-safe
 # correlation id and a durable parent record under state/pending-replies/ before
@@ -234,6 +241,8 @@ fi
 . "$SCRIPT_DIR/fm-task-inbox-lib.sh"
 # shellcheck source=bin/fm-timeout-lib.sh
 . "$SCRIPT_DIR/fm-timeout-lib.sh"
+# shellcheck source=bin/fm-conn-lib.sh
+. "$SCRIPT_DIR/fm-conn-lib.sh"
 
 FM_GUARD_CONTINUE_LINE='This is a supervision warning only; the requested message WILL still be sent.' "$SCRIPT_DIR/fm-guard.sh" || true
 
@@ -587,6 +596,22 @@ if [ -n "$RESOLVE_KEYS" ]; then
     echo "error: --resolve-key '$k': no open decision or blocker with that key in $RESOLVE_STATUS_FILE, and no captain-held task '$k' or '$RESOLVE_TASK_ID-decision-$k' still open (already closed or mistyped). Re-check the OPEN DECISIONS listing, then resend without that key or with the right one; nothing was sent." >&2
     exit 1
   done
+fi
+
+# Captain-at-the-conn advisory. While the captain is working in a task's own
+# terminal he is that worker's second supervisor, and a steer arriving mid-
+# conversation is how the two of them end up pulling one worker in two
+# directions (AGENTS.md hard rule 4 and section 8). This is deliberately an
+# advisory rather than a refusal: steering is the delivery path a real blocker
+# depends on, and the captain himself may ask for something to be sent to a
+# task he is standing in, so the honest thing is to say so loudly at the moment
+# it happens rather than to invent a new way for a steer to fail. The flag's
+# bounded expiry means this cannot nag about a terminal he has left.
+if [ -n "$TARGET_META" ]; then
+  CONN_TASK_ID=$(fm_send_id_from_meta "$TARGET_META")
+  if [ -n "$CONN_TASK_ID" ] && CONN_LABEL=$(fm_conn_label "$STATE" "$CONN_TASK_ID"); then
+    echo "notice: $CONN_TASK_ID - $CONN_LABEL. Supervision is standing off this task because the captain is working in it directly; unless he asked for this message, let him finish and read what he settled from the task's durable record." >&2
+  fi
 fi
 
 # Close each answered decision in this home's ledger, only after the answer is
