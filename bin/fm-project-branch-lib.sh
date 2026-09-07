@@ -26,7 +26,7 @@
 #   4. Per-task agent wiring never overwrites a file the captain already has.
 #
 # The default branch is resolved per project by fm_default_branch() from
-# bin/fm-tangle-lib.sh - the same single resolver bin/fm-dashboard-snapshot.sh
+# bin/fm-tangle-lib.sh - the same single resolver bin/fm-dashboard.mjs
 # uses - because registered projects sit on master, main, develop and test alike
 # and nothing here may assume one name.
 #

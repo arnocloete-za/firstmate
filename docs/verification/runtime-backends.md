@@ -246,13 +246,13 @@ can't find window: fm-gone
 rc=1
 ```
 
-The portable regression is `tests/fm-dashboard-live-snapshot.test.sh`, which drives a real tmux server on a private socket and proves the projection tells a live window from a vanished one while the canonical snapshot's cheap `endpoint.exists` reads true for both.
+The portable regression is `tests/fm-dashboard.test.sh`, which drives a real tmux server on a private socket and proves the page tells a live window from a vanished one while the canonical snapshot's cheap `endpoint.exists` reads true for both.
 
 ```console
-$ bash tests/fm-dashboard-live-snapshot.test.sh | tail -3
-ok - a window that exists reads as reachable and gets a jump command built from its own recorded session
+$ bash tests/fm-dashboard.test.sh | tail -3
 ok - a vanished window reads as gone with no jump command, despite the cheap endpoint read reporting it exists
 ok - a remote endpoint reports as remote and is offered no local jump command
+ALL TESTS PASSED
 ```
 
 ## Composer classification matrix
