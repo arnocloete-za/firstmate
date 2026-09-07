@@ -99,6 +99,7 @@ state/               runtime records and signals; gitignored
   <id>.muse-session  muse busy-source binding (sessions root plus task worktree) written by fm-spawn; removed by teardown
   <id>.cursor-session  cursor busy-source binding (projects root, task worktree, prior conversations) written by fm-spawn; removed by teardown
   <id>.reconcile-nudged  epoch second of the last inventory-reconcile nudge sent to this secondmate; bin/fm-secondmate-reconcile.sh owns its per-home cooldown window
+  <id>.isolated-authorized  the captain's recorded say-so that this one piece of ship work may run in an isolated copy of a registered project; written only by bin/fm-isolated-authorize.sh, removed by teardown
   <id>.conn          the captain is working in that task's own terminal, so supervision stands off it (section 8); refreshed by the worker on every captain message and expiring on a bounded idle window, with bin/fm-conn-lib.sh owning the format, writers, and expiry and bin/fm-conn.sh the by-hand set and release; removed by teardown
   <id>.backlog-close  the exact backlog transition a teardown recorded before removing the task's record, so an interrupted cleanup can still be finished at the next session start; bin/fm-backlog-transition-lib.sh owns its format and replay, and a landed transition removes it
   <id>.inbox/          durable steering inbox: sequenced firstmate instruction records the worker acknowledges by moving them into its handled/ subdirectory; written by fm-send, with ordinary records re-rung and escalated by the watcher while explicit fire-and-forget records are excluded from that ladder, and removed by teardown (bin/fm-task-inbox-lib.sh)
@@ -346,6 +347,10 @@ The path's worker, automated gates, and captain approval remain authoritative:
   A batch branch belongs to a batch of work rather than to one task, so several tasks may land on it and no branch name is ever derived from a task id.
   A project that is not sitting on its own default branch is occupied - by a worker or by the captain himself - and dispatch stops and reports which branch holds it rather than deciding between those cases.
   One piece of work at a time per project is the captain's own ruling, so that refusal is the model working; take it to him instead of engineering around it.
+
+A registered project's ship work runs in that project's own directory, so an isolated copy is never the fallback when an in-place dispatch refuses.
+Both dispatch and scout promotion refuse it for a registered project unless the captain has authorized that exact piece of work, recorded with `bin/fm-isolated-authorize.sh`; scouts and unregistered projects are unaffected.
+Relay the refusal and let him rule rather than re-dispatching the same work under another mode.
 
 Delivery mode and `yolo` are orthogonal.
 `yolo` governs merge authority only: with it off, the captain approves every PR merge and every local-only landing; with it on, firstmate merges green, in-scope work itself.
