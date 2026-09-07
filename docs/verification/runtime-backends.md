@@ -204,6 +204,57 @@ Valid cleanup removed only the exact task-bound target and left the control wind
 The metadata-only validation covers tmux, Herdr, Zellij, Orca, and cmux before backend dispatch.
 Claude, Codex, OpenCode, Pi, pi-signed, Grok, Kimi, Cursor, and Muse share that backend cleanup boundary; their harness-specific hook files, tokens, transcript bindings, and session-log sidecars are cleaned only after it, so no harness needs a separate endpoint parser.
 
+### Window-targeted reads and the /dashboard jump command
+
+Two window-target behaviors the `/dashboard` live-work board depends on were verified on 2026-09-07 with tmux 3.4 on Linux, on an isolated private socket.
+
+First, `display-message -t` does not prove a window exists.
+Given a session that exists and a window name that does not, it exits 0 and answers for the client's CURRENT window, so it cannot be used to decide whether a recorded endpoint is still there.
+
+```sh
+tmux -L fmcheck new-session -d -s s -n first
+tmux -L fmcheck display-message -p -t 's:first' '#{pane_id} #{window_name}'
+tmux -L fmcheck display-message -p -t 's:absent' '#{pane_id} #{window_name}'; echo "rc=$?"
+```
+
+```text
+%2 first
+%0 first
+rc=0
+```
+
+`fm_backend_agent_state` is unaffected: its tmux adapter requires a successful `list-windows` inventory and reports `missing` only when that inventory omits the exact window, which is why the board reads terminal presence through it rather than through the cheap presence check.
+`select-window` is likewise authoritative, failing with `can't find window: <name>` and rc=1 on a window that is gone.
+
+Second, the copyable jump command the board hands the captain, `tmux attach -t '<session>:<window>' 2>/dev/null || tmux switch-client -t '<session>:<window>'`, was verified in all three states.
+From outside tmux, `attach -t <session>:<window>` attaches and selects that exact window rather than the session's current one.
+From inside a tmux client, `attach` refuses to nest with rc=1 and changes nothing, and `switch-client` then moves the existing client to the window, so one command covers both places the captain can be standing.
+On a window that no longer exists both halves fail loudly with `can't find window`, leaving the client where it was.
+
+```text
+# from outside tmux, attach -t scratch:fm-beta
+active before: w1:0 fm-alpha:1 fm-beta:0
+active after:  w1:0 fm-alpha:0 fm-beta:1
+
+# from inside a tmux client, attach then switch-client
+sessions should be nested with care, unset $TMUX to force
+rc=0
+active now: shellw:0 fm-alpha:0 fm-beta:1
+
+# from inside a tmux client, a window that is gone
+can't find window: fm-gone
+rc=1
+```
+
+The portable regression is `tests/fm-dashboard-live-snapshot.test.sh`, which drives a real tmux server on a private socket and proves the projection tells a live window from a vanished one while the canonical snapshot's cheap `endpoint.exists` reads true for both.
+
+```console
+$ bash tests/fm-dashboard-live-snapshot.test.sh | tail -3
+ok - a window that exists reads as reachable and gets a jump command built from its own recorded session
+ok - a vanished window reads as gone with no jump command, despite the cheap endpoint read reporting it exists
+ok - a remote endpoint reports as remote and is offered no local jump command
+```
+
 ## Composer classification matrix
 
 The shared composer classifier (`bin/fm-composer-lib.sh`, `fm_composer_classify_screen`) owns every composer shape fleet-wide; each backend contributes only a capture and a capability descriptor.
