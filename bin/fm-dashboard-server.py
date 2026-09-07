@@ -10,12 +10,19 @@ and threaded, so one stalled or idle connection cannot wedge the board.
 
 The one addition: a POST to /run with a JSON body {"name": "<project name>"}
 launches that project's registered run script in a local tmux session named
-exactly "dashboard" (created detached if it does not already exist), in a new
-window named after the project with its working directory set to the project's
-own path. If a window with that name already exists (an earlier run still
-going, or one the captain is watching), Run never kills or replaces it - real
-work in a tmux window is never destroyed from here - it just selects that
-window by its tmux window id so it comes to focus, and creates nothing new.
+exactly "dashboard", in a window named after the project with its working
+directory set to the project's own path. When that session does not exist yet,
+it is created detached already carrying that first window, so a Run never
+leaves a stray bare-shell window behind. If a window with the project's name
+already exists (an earlier run still going, or one the captain is watching),
+Run never kills or replaces it - real work in a tmux window is never destroyed
+from here - it just selects that window by its tmux window id so it comes to
+focus, and creates nothing new.
+
+Because the server is threaded, launches are serialized under one lock: the
+look-for-an-existing-window and create-it steps are a single check-then-act on
+shared tmux state, so two clicks arriving together can neither both miss the
+same window and duplicate it nor collide creating the session.
 
 Every tmux target here is either an exact session name ("=dashboard") or a
 tmux-assigned window id ("@N"), never an interpolated "session:window" string:
@@ -32,11 +39,12 @@ The request body carries only a project name, never a path or command. The
 name is resolved against the fm-dashboard-snapshot.v1 payload embedded in
 <directory>/index.html - the same trusted data bin/fm-dashboard-snapshot.sh
 already read from data/projects.md - and a name that is not a known
-registered project with a run_script, or whose path is not a directory right
-now, is rejected with 400 rather than launched from the wrong working
-directory. This is the only place a client-supplied value reaches a subprocess
-call, and it is always passed as a tmux window name (a single argv element,
-never shell text).
+registered project with a run_script, whose path is not a directory right
+now, or whose run script is not an executable file right now, is rejected with
+400 rather than launched from the wrong working directory or reported as
+started when there was nothing to run. This is the only place a
+client-supplied value reaches a subprocess call, and it is always passed as a
+tmux window name (a single argv element, never shell text).
 """
 import http.server
 import json
@@ -44,6 +52,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 
 DATA_SLOT_RE = re.compile(
     r'<script id="dashboard-data" type="application/json">\s*(.*?)\s*</script>',
@@ -51,6 +60,7 @@ DATA_SLOT_RE = re.compile(
 )
 SESSION = "dashboard"
 SESSION_TARGET = "=" + SESSION
+LAUNCH_LOCK = threading.Lock()
 
 
 class Handler(http.server.SimpleHTTPRequestHandler):
@@ -89,6 +99,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return
         if not os.path.isdir(path):
             self._respond_json(400, {"error": "project path is not a directory: %s" % path})
+            return
+        if not os.path.isfile(run_script) or not os.access(run_script, os.X_OK):
+            self._respond_json(
+                400,
+                {"error": "project run script is not an executable file: %s" % run_script},
+            )
             return
 
         try:
@@ -129,21 +145,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         return None
 
     def _launch(self, name, path, run_script):
-        has_session = subprocess.run(
-            ["tmux", "has-session", "-t", SESSION_TARGET],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-        )
-        if has_session.returncode != 0:
-            subprocess.run(["tmux", "new-session", "-d", "-s", SESSION], check=True)
-        else:
-            # tmux allows more than one window with the same name in a
-            # session - it does not reuse or refuse on a name collision, it
-            # just adds another. Run must never kill or replace a window: it
-            # may be real, currently-running work the captain is watching.
-            # If one with this project's name already exists, just select it
-            # (bring it to focus) and create nothing new.
+        with LAUNCH_LOCK:
+            # list-windows also answers "does the session exist at all" - it
+            # exits non-zero for a missing session or a missing tmux server.
             existing = subprocess.run(
                 ["tmux", "list-windows", "-t", SESSION_TARGET, "-F", "#{window_id}\t#{window_name}"],
                 stdout=subprocess.PIPE,
@@ -151,15 +155,28 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 check=False,
                 text=True,
             )
+            if existing.returncode != 0:
+                subprocess.run(
+                    ["tmux", "new-session", "-d", "-s", SESSION,
+                     "-n", name, "-c", path, run_script],
+                    check=True,
+                )
+                return
+            # tmux allows more than one window with the same name in a
+            # session - it does not reuse or refuse on a name collision, it
+            # just adds another. Run must never kill or replace a window: it
+            # may be real, currently-running work the captain is watching.
+            # If one with this project's name already exists, just select it
+            # (bring it to focus) and create nothing new.
             for line in existing.stdout.splitlines():
                 window_id, _, window_name = line.partition("\t")
                 if window_name == name:
                     subprocess.run(["tmux", "select-window", "-t", window_id], check=True)
                     return
-        subprocess.run(
-            ["tmux", "new-window", "-t", SESSION_TARGET, "-n", name, "-c", path, run_script],
-            check=True,
-        )
+            subprocess.run(
+                ["tmux", "new-window", "-t", SESSION_TARGET, "-n", name, "-c", path, run_script],
+                check=True,
+            )
 
     def _respond_json(self, code, obj):
         body = json.dumps(obj).encode("utf-8")

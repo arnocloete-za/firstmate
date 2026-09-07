@@ -12,7 +12,9 @@
 # available) its registry-trusted launch plus that a second /run for the same
 # project - including one whose name contains a "." - selects the existing
 # window instead of duplicating it, silently no-oping, or ever
-# killing/replacing a still-running process.
+# killing/replacing a still-running process, that the first Run creates the
+# session carrying only the project's own window, and that concurrent Runs can
+# neither duplicate a window nor collide creating the session.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -33,7 +35,19 @@ export FM_HOME
 # range on the test host cannot flake it, and stop any server this test
 # started on any exit path.
 export FM_DASHBOARD_PORT_BASE=$((20000 + (RANDOM % 5000)))
-cleanup() { "$SERVE" stop >/dev/null 2>&1 || true; fm_test_cleanup; }
+# /run drives a real tmux, and the session name it uses ("dashboard") is fixed
+# by design - the captain reuses one persistent session. Point this whole test
+# run, the dashboard server it starts included, at a private tmux socket
+# directory, so it can never see, mutate, or destroy the captain's own
+# "dashboard" session, and so "no dashboard session yet" is a state this test
+# can actually arrange.
+export TMUX_TMPDIR="$TMP_ROOT/tmux"
+mkdir -p "$TMUX_TMPDIR"
+cleanup() {
+  "$SERVE" stop >/dev/null 2>&1 || true
+  tmux kill-server >/dev/null 2>&1 || true
+  fm_test_cleanup
+}
 trap cleanup EXIT INT TERM
 
 RUNTEST_DIR="$TMP_ROOT/runtest-proj"
@@ -56,6 +70,22 @@ echo "\$PWD" > "$DOTTED_MARKER"
 sleep 30
 EOF
 chmod +x "$TMP_ROOT/dottedtest.sh"
+
+# Concurrency fixture: a project no other check launches, so a burst of
+# simultaneous Runs starts from a known-clean window set.
+cat > "$TMP_ROOT/conctest.sh" <<'EOF'
+#!/usr/bin/env bash
+sleep 30
+EOF
+chmod +x "$TMP_ROOT/conctest.sh"
+
+# tmux exits 0 for a command that cannot run, and the window vanishes, so only
+# the server can tell the captain that a registered run script is gone or is
+# not executable.
+MISSING_SCRIPT="$TMP_ROOT/missing-run.sh"
+NOEXEC_SCRIPT="$TMP_ROOT/noexec-run.sh"
+printf '#!/usr/bin/env bash\nsleep 30\n' > "$NOEXEC_SCRIPT"
+chmod 0644 "$NOEXEC_SCRIPT"
 
 GONE_DIR="$TMP_ROOT/gone-proj"
 
@@ -100,6 +130,42 @@ cat > "$DATA" <<JSON
       "last_commit": {"date": "2026-01-01T00:00:00Z", "author": "alice", "subject": "init"},
       "commits": [],
       "run_script": "$TMP_ROOT/dottedtest.sh"
+    },
+    {
+      "name": "conctest",
+      "path": "$RUNTEST_DIR",
+      "available": true,
+      "clean": true,
+      "branch": "main",
+      "default_branch": "main",
+      "on_default": true,
+      "last_commit": {"date": "2026-01-01T00:00:00Z", "author": "alice", "subject": "init"},
+      "commits": [],
+      "run_script": "$TMP_ROOT/conctest.sh"
+    },
+    {
+      "name": "missingscript",
+      "path": "$RUNTEST_DIR",
+      "available": true,
+      "clean": true,
+      "branch": "main",
+      "default_branch": "main",
+      "on_default": true,
+      "last_commit": {"date": "2026-01-01T00:00:00Z", "author": "alice", "subject": "init"},
+      "commits": [],
+      "run_script": "$MISSING_SCRIPT"
+    },
+    {
+      "name": "noexecscript",
+      "path": "$RUNTEST_DIR",
+      "available": true,
+      "clean": true,
+      "branch": "main",
+      "default_branch": "main",
+      "on_default": true,
+      "last_commit": {"date": "2026-01-01T00:00:00Z", "author": "alice", "subject": "init"},
+      "commits": [],
+      "run_script": "$NOEXEC_SCRIPT"
     },
     {
       "name": "gone",
@@ -224,6 +290,19 @@ GONE_CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$URL3/run" \
 [ "$GONE_CODE" = "400" ] || fail "/run should reject a project whose path is not a directory, got $GONE_CODE"
 pass "/run rejects a project whose registered path is not a directory instead of launching it elsewhere"
 
+# Same false-success class for the script itself: tmux would exit 0 and the
+# window would vanish, so the click would report Started with nothing running.
+[ ! -e "$MISSING_SCRIPT" ] || fail "test fixture error: $MISSING_SCRIPT should not exist"
+MISSING_SCRIPT_CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$URL3/run" \
+  -H 'Content-Type: application/json' -d '{"name":"missingscript"}')
+[ "$MISSING_SCRIPT_CODE" = "400" ] \
+  || fail "/run should reject a project whose run script does not exist, got $MISSING_SCRIPT_CODE"
+NOEXEC_CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$URL3/run" \
+  -H 'Content-Type: application/json' -d '{"name":"noexecscript"}')
+[ "$NOEXEC_CODE" = "400" ] \
+  || fail "/run should reject a project whose run script is not executable, got $NOEXEC_CODE"
+pass "/run rejects a project whose run script is missing or not executable instead of reporting it started"
+
 # Only the served page's own same-origin requests may launch anything: any
 # other page the captain has open must not be able to use this loopback port.
 CROSS_SITE_CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$URL3/run" \
@@ -257,27 +336,23 @@ else
   # Every tmux target below is an exact session name or a tmux window id, for
   # the same reason the server uses them: a bare "dashboard" prefix-matches
   # other sessions, and "dashboard:run.test" parses "test" as a pane.
+  dashboard_windows() {  # -> "<window id>\t<window name>" per window
+    tmux list-windows -t '=dashboard' -F $'#{window_id}\t#{window_name}' 2>/dev/null
+  }
   dashboard_window_ids() {  # <window name> -> matching tmux window ids
-    tmux list-windows -t '=dashboard' -F $'#{window_id}\t#{window_name}' 2>/dev/null \
-      | awk -F'\t' -v n="$1" '$2 == n { print $1 }'
+    dashboard_windows | awk -F'\t' -v n="$1" '$2 == n { print $1 }'
   }
   active_dashboard_window() {
     tmux list-windows -t '=dashboard' -F $'#{window_active}\t#{window_name}' 2>/dev/null \
       | awk -F'\t' '$1 == 1 { print $2 }'
   }
 
-  HAD_SESSION=0
-  tmux has-session -t '=dashboard' 2>/dev/null && HAD_SESSION=1
-  run_cleanup() {
-    local wid
-    for wid in $(dashboard_window_ids runtest) $(dashboard_window_ids run.test); do
-      tmux kill-window -t "$wid" >/dev/null 2>&1 || true
-    done
-    if [ "$HAD_SESSION" -eq 0 ]; then
-      tmux kill-session -t '=dashboard' >/dev/null 2>&1 || true
-    fi
-  }
-  trap 'run_cleanup; cleanup' EXIT INT TERM
+  # This test's private tmux starts with no dashboard session at all, so the
+  # first Run has to create one - and it must come up carrying only the
+  # project's own window, with no stray bare shell alongside it.
+  if tmux has-session -t '=dashboard' 2>/dev/null; then
+    fail "the private test tmux should start with no dashboard session"
+  fi
 
   RUN_CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$URL3/run" \
     -H 'Content-Type: application/json' -d '{"name":"runtest"}')
@@ -294,7 +369,10 @@ else
   RUN_WID=$(dashboard_window_ids runtest)
   [ -n "$RUN_WID" ] \
     || fail "no tmux window named after the project was created in the dashboard session"
-  pass "/run creates (or reuses) the dashboard tmux session and runs the project's own script there"
+  FIRST_WINDOW_SET=$(dashboard_windows | grep -c .)
+  [ "$FIRST_WINDOW_SET" = "1" ] \
+    || fail "the first /run should create the session carrying only the project's window, got $FIRST_WINDOW_SET: $(dashboard_windows | tr '\n' ' ')"
+  pass "the first /run creates the dashboard tmux session carrying only the project's own window and runs its script there"
 
   # Clicking Run again while the previous window for the same project is
   # still alive must not silently do nothing, but it must also never kill or
@@ -350,7 +428,41 @@ else
     || fail "a second /run for a dotted project name should focus its existing window, active was $(active_dashboard_window)"
   pass "a second /run for a project name containing a '.' selects its existing window instead of quietly focusing nothing"
 
-  run_cleanup
+  # <project name> <label>: fire six /run requests at once. Every one must
+  # answer 200, and exactly one window must exist afterwards - an unserialized
+  # launch has them all miss the window and create it several times over.
+  assert_concurrent_run() {
+    local name=$1 label=$2 dir i code count
+    dir="$TMP_ROOT/conc-$label"
+    mkdir -p "$dir"
+    for i in 1 2 3 4 5 6; do
+      curl -s -o /dev/null -w '%{http_code}' -X POST "$URL3/run" \
+        -H 'Content-Type: application/json' -d "{\"name\":\"$name\"}" > "$dir/$i" &
+    done
+    wait
+    for i in 1 2 3 4 5 6; do
+      code=$(cat "$dir/$i")
+      [ "$code" = "200" ] \
+        || fail "concurrent /run $i for '$name' ($label) should succeed, got $code"
+    done
+    sleep 0.3
+    count=$(dashboard_window_ids "$name" | grep -c .)
+    [ "$count" = "1" ] \
+      || fail "six concurrent /run for '$name' ($label) must leave exactly one window, found $count"
+  }
+
+  assert_concurrent_run conctest session-present
+  pass "concurrent /run requests for one project cannot duplicate its window"
+
+  # The same burst with no dashboard session at all: every request sees no
+  # session, so an unserialized launch has them all race to create it and all
+  # but one fail with tmux's own "duplicate session".
+  tmux kill-session -t '=dashboard' >/dev/null 2>&1 || true
+  if tmux has-session -t '=dashboard' 2>/dev/null; then
+    fail "could not clear the private dashboard session for the creation-race check"
+  fi
+  assert_concurrent_run conctest session-missing
+  pass "concurrent /run requests with no dashboard session yet cannot collide creating it"
 fi
 
 echo "ALL TESTS PASSED"
