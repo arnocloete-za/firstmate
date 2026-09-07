@@ -260,6 +260,8 @@ Iterate as long as you need: build, run, test, fix, repeat, committing to \`$bra
    \`no-mistakes axi run --intent "<this brief's Captain's intent>" --skip push,pr,ci\`
 
    The \`--skip push,pr,ci\` is REQUIRED and is not yours to drop: it is what keeps a green pipeline from pushing or opening a PR on its own.
+   If the pipeline rejects those step names, append \`blocked: cannot skip the push/PR steps - {the exact error}\` and stop.
+   Running without the skip would open a PR the captain has not asked for, so never fall back to a plain run here.
    Everything else about driving the pipeline is unchanged, including the gate rules below.
 4. When the pipeline passes, append \`done: ready for a pull request on branch $branch - {summary}\` to the status file and stop. You are finished.
 

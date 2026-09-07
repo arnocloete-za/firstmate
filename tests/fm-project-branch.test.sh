@@ -538,6 +538,12 @@ EOF
     "the brief treated a green pipeline as authority to open a PR"
   assert_contains "$body" "Never open the pull request yourself, and never push" \
     "the brief did not forbid opening the PR and pushing"
+  # If the pipeline will not accept those skip names, the safe move is to stop:
+  # falling back to a plain run would open the PR this stage exists to withhold.
+  assert_contains "$body" "blocked: cannot skip the push/PR steps" \
+    "the brief had no safe stop for a rejected skip"
+  assert_contains "$body" "never fall back to a plain run here" \
+    "the brief allowed falling back to a run that would open a PR"
 
   # Finishing silently is the other half of the ruling: the ready line has to name
   # the branch, because the reminder is the point.
