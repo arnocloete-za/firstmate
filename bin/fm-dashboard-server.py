@@ -5,29 +5,43 @@ Usage: fm-dashboard-server.py <port> <directory>
 
 Serves <directory> as plain static files (like `python3 -m http.server`) for
 every GET/HEAD request - the ordinary read-only dashboard page and its
-assets. Bound to 127.0.0.1 only by its caller (bin/fm-dashboard-serve.sh).
+assets. Bound to 127.0.0.1 only by its caller (bin/fm-dashboard-serve.sh),
+and threaded, so one stalled or idle connection cannot wedge the board.
 
 The one addition: a POST to /run with a JSON body {"name": "<project name>"}
 launches that project's registered run script in a local tmux session named
-"dashboard" (created detached if it does not already exist), in a new window
-named after the project with its working directory set to the project's own
-path. If a window with that name already exists (an earlier run still going,
-or one the captain is watching), Run never kills or replaces it - real work
-in a tmux window is never destroyed from here - it just selects that window
-so it comes to focus, and creates nothing new.
+exactly "dashboard" (created detached if it does not already exist), in a new
+window named after the project with its working directory set to the project's
+own path. If a window with that name already exists (an earlier run still
+going, or one the captain is watching), Run never kills or replaces it - real
+work in a tmux window is never destroyed from here - it just selects that
+window by its tmux window id so it comes to focus, and creates nothing new.
+
+Every tmux target here is either an exact session name ("=dashboard") or a
+tmux-assigned window id ("@N"), never an interpolated "session:window" string:
+tmux prefix-matches bare session names, so a bare "dashboard" target can land
+in an unrelated session like "dashboard-notes", and a window name containing
+"." or ":" parses as a pane/window suffix rather than as the name.
+
+POST /run only answers same-origin requests from the served page itself. It
+requires a JSON content type and rejects any request whose Sec-Fetch-Site or
+Origin says it came from somewhere else, so another page the captain has open
+cannot use the loopback port to launch a run script behind their back.
 
 The request body carries only a project name, never a path or command. The
 name is resolved against the fm-dashboard-snapshot.v1 payload embedded in
 <directory>/index.html - the same trusted data bin/fm-dashboard-snapshot.sh
 already read from data/projects.md - and a name that is not a known
-registered project with a run_script is rejected with 400. This is the only
-place a client-supplied value reaches a subprocess call, and it is always
-passed as a tmux window name (a single argv element, never shell text).
+registered project with a run_script, or whose path is not a directory right
+now, is rejected with 400 rather than launched from the wrong working
+directory. This is the only place a client-supplied value reaches a subprocess
+call, and it is always passed as a tmux window name (a single argv element,
+never shell text).
 """
 import http.server
 import json
+import os
 import re
-import socketserver
 import subprocess
 import sys
 
@@ -35,17 +49,26 @@ DATA_SLOT_RE = re.compile(
     r'<script id="dashboard-data" type="application/json">\s*(.*?)\s*</script>',
     re.S,
 )
+SESSION = "dashboard"
+SESSION_TARGET = "=" + SESSION
 
 
 class Handler(http.server.SimpleHTTPRequestHandler):
+    allowed_origins = ()
+
     def do_POST(self):
         if self.path != "/run":
             self.send_error(404)
             return
 
-        length = int(self.headers.get("Content-Length", 0) or 0)
-        body = self.rfile.read(length) if length else b""
+        cross_site = self._cross_site_reason()
+        if cross_site is not None:
+            self._respond_json(403, {"error": cross_site})
+            return
+
         try:
+            length = int(self.headers.get("Content-Length", 0) or 0)
+            body = self.rfile.read(length) if length else b""
             payload = json.loads(body)
             name = payload["name"]
             if not isinstance(name, str) or not name:
@@ -64,6 +87,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if not run_script or not path:
             self._respond_json(400, {"error": "project has no registered run script: %s" % name})
             return
+        if not os.path.isdir(path):
+            self._respond_json(400, {"error": "project path is not a directory: %s" % path})
+            return
 
         try:
             self._launch(name, path, run_script)
@@ -71,6 +97,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._respond_json(500, {"error": "launch failed: %s" % exc})
             return
         self._respond_json(200, {"ok": True})
+
+    def _cross_site_reason(self):
+        content_type = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        if content_type != "application/json":
+            return "expected a JSON content type, got: %s" % (content_type or "none")
+        fetch_site = self.headers.get("Sec-Fetch-Site")
+        if fetch_site is not None and fetch_site != "same-origin":
+            return "cross-site request refused"
+        origin = self.headers.get("Origin")
+        if origin is not None and origin not in self.allowed_origins:
+            return "cross-origin request refused"
+        return None
 
     def _find_project(self, name):
         try:
@@ -92,13 +130,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def _launch(self, name, path, run_script):
         has_session = subprocess.run(
-            ["tmux", "has-session", "-t", "dashboard"],
+            ["tmux", "has-session", "-t", SESSION_TARGET],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             check=False,
         )
         if has_session.returncode != 0:
-            subprocess.run(["tmux", "new-session", "-d", "-s", "dashboard"], check=True)
+            subprocess.run(["tmux", "new-session", "-d", "-s", SESSION], check=True)
         else:
             # tmux allows more than one window with the same name in a
             # session - it does not reuse or refuse on a name collision, it
@@ -107,22 +145,19 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             # If one with this project's name already exists, just select it
             # (bring it to focus) and create nothing new.
             existing = subprocess.run(
-                ["tmux", "list-windows", "-t", "dashboard", "-F", "#{window_name}"],
+                ["tmux", "list-windows", "-t", SESSION_TARGET, "-F", "#{window_id}\t#{window_name}"],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
                 check=False,
                 text=True,
             )
-            if name in existing.stdout.splitlines():
-                subprocess.run(
-                    ["tmux", "select-window", "-t", "dashboard:%s" % name],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    check=False,
-                )
-                return
+            for line in existing.stdout.splitlines():
+                window_id, _, window_name = line.partition("\t")
+                if window_name == name:
+                    subprocess.run(["tmux", "select-window", "-t", window_id], check=True)
+                    return
         subprocess.run(
-            ["tmux", "new-window", "-t", "dashboard", "-n", name, "-c", path, run_script],
+            ["tmux", "new-window", "-t", SESSION_TARGET, "-n", name, "-c", path, run_script],
             check=True,
         )
 
@@ -143,10 +178,15 @@ def main():
     directory = sys.argv[2]
 
     class BoundHandler(Handler):
+        allowed_origins = (
+            "http://127.0.0.1:%d" % port,
+            "http://localhost:%d" % port,
+        )
+
         def __init__(self, *args, **kwargs):
             super().__init__(*args, directory=directory, **kwargs)
 
-    with socketserver.TCPServer(("127.0.0.1", port), BoundHandler) as httpd:
+    with http.server.ThreadingHTTPServer(("127.0.0.1", port), BoundHandler) as httpd:
         httpd.serve_forever()
 
 

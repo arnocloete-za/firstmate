@@ -21,6 +21,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-bearings-board.sh`   | Build and arm the stable interactive `/bearings lavish` fleet board                  |
 | `fm-dashboard-snapshot.sh` | Read-only per-project git status (cleanliness, last commit, recent commits, branch vs. default) for the `/dashboard` board |
 | `fm-dashboard-serve.sh`  | Build the `/dashboard` project-status board from a snapshot and serve it on a local port, reusing an already-live server for the home |
+| `fm-dashboard-server.py` | Serve the built `/dashboard` board on loopback and own the same-origin `POST /run` contract that launches a registered project's run script in the `dashboard` tmux session |
 | `fm-secondmate-reconcile.sh` | Queue Bearings reconcile requests for later supervision delivery and ask each mismatched home through its durable inbox with a per-home cooldown |
 | `fm-update.sh`           | Fast-forward-only self-update of firstmate and local or remote secondmate homes       |
 | `fm-on.sh`               | Execute one tracked Firstmate command in a configured remote secondmate home, using its job worker except for the doctor bootstrap |

@@ -23,7 +23,8 @@
 # into that project's registry description by hand.
 #
 # One more optional phrase in the same description uses the same reading
-# convention, captured up to the next ";" or end of line:
+# convention, captured up to the next space, ";", or end of line (so a path
+# containing a space is truncated, exactly as for the clone-path phrase):
 #   "run script at <ABSOLUTE_PATH>" - a local script that runs this project;
 #     when present, the /dashboard page offers a "Run" control that launches
 #     it (bin/fm-dashboard-server.py owns the launch mechanics). Absent for
