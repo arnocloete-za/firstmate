@@ -323,9 +323,9 @@ EOF
   pass "fm-spawn: occupancy is judged against the project's own default branch, not an assumed master"
 }
 
-# Work never happens on the default branch. Two shapes have to refuse: the
-# directory sitting on the default branch with no batch branch named, and the
-# default branch named AS the batch branch.
+# Work never happens on the default branch, and the batch branch is always named
+# explicitly. Two shapes have to refuse: the default branch named AS the batch
+# branch, and no batch branch named at all.
 test_the_default_branch_is_refused() {
   local rec home proj fakebin out status
   rec=$(make_home default_branch)
@@ -341,8 +341,8 @@ EOF
     "naming the default branch was not refused as such"
   assert_absent "$home/state/onmain-c1.meta" "the refused default-branch spawn wrote task metadata"
 
-  # On the default branch with no batch branch named: there is nothing to adopt,
-  # and inventing one is exactly what this mode must not do.
+  # No batch branch named at all: deriving one - from the task id or from whatever
+  # the directory happens to be on - is exactly what this mode must not do.
   write_brief "$home" nobranch-c2 project-branch
   out=$(run_spawn "$home" "$fakebin" nobranch-c2 "$proj" claude \
     --mode project-branch --yolo off)
@@ -350,7 +350,7 @@ EOF
   [ "$status" -ne 0 ] || fail "a project-branch spawn with no --branch should exit non-zero"
   assert_contains "$out" "requires --branch" "the missing batch branch was not refused"
   assert_absent "$home/state/nobranch-c2.meta" "the refused branchless spawn wrote task metadata"
-  pass "fm-spawn: the default branch is refused, named or adopted"
+  pass "fm-spawn: the default branch is refused, and the batch branch is never implicit"
 }
 
 # Uncommitted changes on the DEFAULT branch are a deliberate refusal, separate
