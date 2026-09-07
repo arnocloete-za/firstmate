@@ -26,8 +26,8 @@
 #            this script recorded before it grew POST /run (the older
 #            `python3 -m http.server` shape) is stopped and replaced rather
 #            than reused or orphaned, since Run cannot work against it.
-#            Otherwise
-#            binds a fresh python3 static server to 127.0.0.1 on the first
+#            Otherwise it binds a fresh python3 server (static files plus the
+#            POST /run endpoint) to 127.0.0.1 on the first
 #            free port at or after FM_DASHBOARD_PORT_BASE (default 4590,
 #            scanning up to 50 ports) and records its pid/port for reuse.
 #            Prints:

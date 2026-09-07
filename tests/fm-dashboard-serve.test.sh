@@ -201,11 +201,6 @@ NOEXEC_SCRIPT="$TMP_ROOT/noexec-run.sh"
 printf '#!/usr/bin/env bash\nsleep 30\n' > "$NOEXEC_SCRIPT"
 chmod 0644 "$NOEXEC_SCRIPT"
 
-# tmux hands a one-argument shell-command to `/bin/sh -c`, so an otherwise
-# perfectly valid path carrying a shell metacharacter is re-parsed by sh. It
-# passes every server-side check (absolute, a file, executable), sh then
-# rejects it, and tmux still exits 0 - a launch that never happened reported
-# as success.
 # A run that finishes at once. With remain-on-exit the window it leaves keeps
 # the project's name but has a dead pane - not a live run.
 DEAD_MARKER="$TMP_ROOT/dead.marker"
@@ -215,6 +210,11 @@ echo ran >> "$DEAD_MARKER"
 EOF
 chmod +x "$TMP_ROOT/deadtest.sh"
 
+# tmux hands a one-argument shell-command to `/bin/sh -c`, so an otherwise
+# perfectly valid path carrying a shell metacharacter is re-parsed by sh. It
+# passes every server-side check (absolute, a file, executable), sh then
+# rejects it, and tmux still exits 0 - a launch that never happened reported
+# as success.
 META_MARKER="$TMP_ROOT/meta.marker"
 META_SCRIPT="$TMP_ROOT/meta run(1).sh"
 cat > "$META_SCRIPT" <<EOF

@@ -121,9 +121,18 @@ header.page-head h1 {
 .card.recent-team { background: var(--recent-team-bg); border-color: var(--recent-team-border); }
 button.card-head {
   all: unset;
+  cursor: pointer;
+}
+/* Both head forms - the button an available project uses and the plain div an
+   unavailable one uses - need this layout: the status dot is an inline span
+   that only takes its 10x10 box as a grid item, and the status pill and
+   unavailable reason are placed by grid-column/grid-row. Listed rather than
+   folded into `.card-head` so it keeps the same specificity as the `all:
+   unset` above and, coming after it, still wins. */
+button.card-head,
+div.card-head {
   box-sizing: border-box;
   width: 100%;
-  cursor: pointer;
   padding: 12px 14px;
   display: grid;
   grid-template-columns: auto 1fr auto;
