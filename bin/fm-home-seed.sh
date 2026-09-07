@@ -456,6 +456,23 @@ EOF
   return 1
 }
 
+# Which registered postures a secondmate route can carry. local-only has no
+# remote to clone from; project-branch is defined by the captain's OWN project
+# directory on the main machine, and a secondmate's separate clone is not that
+# directory, so routing it there would quietly deliver a different workflow than
+# the one registered. Both are main-firstmate work.
+seed_project_mode_supported() {  # <project> <mode>
+  local project=$1 mode=$2
+  case "$mode" in
+    local-only)
+      echo "error: project $project is local-only; secondmate routes support only remote-backed no-mistakes and direct-PR projects" >&2
+      return 1 ;;
+    project-branch)
+      echo "error: project $project is project-branch, which means the captain's own project directory on the main machine; that work stays with the main firstmate rather than a secondmate route" >&2
+      return 1 ;;
+  esac
+}
+
 clone_project() {
   local project=$1 home=$2 src dst url dst_url mode
   src="$PROJECTS/$project"
@@ -465,10 +482,7 @@ clone_project() {
   read -r mode _ <<EOF
 $(FM_HOME="$FM_HOME" FM_DATA_OVERRIDE="$DATA" "$FM_ROOT/bin/fm-project-mode.sh" "$project")
 EOF
-  if [ "$mode" = local-only ]; then
-    echo "error: project $project is local-only; secondmate routes support only no-mistakes and direct-PR projects" >&2
-    return 1
-  fi
+  seed_project_mode_supported "$project" "$mode" || return 1
   if [ -e "$dst" ]; then
     [ -d "$dst" ] || { echo "error: seeded project $project exists at $dst but is not a directory" >&2; return 1; }
     git -C "$dst" rev-parse --is-inside-work-tree >/dev/null 2>&1 || { echo "error: seeded project $project at $dst is not a git repo" >&2; return 1; }
@@ -492,10 +506,7 @@ validate_seed_project() {
   read -r mode _ <<EOF
 $(FM_HOME="$FM_HOME" FM_DATA_OVERRIDE="$DATA" "$FM_ROOT/bin/fm-project-mode.sh" "$project")
 EOF
-  if [ "$mode" = local-only ]; then
-    echo "error: project $project is local-only; secondmate routes support only no-mistakes and direct-PR projects" >&2
-    return 1
-  fi
+  seed_project_mode_supported "$project" "$mode" || return 1
   url=$(git -C "$src" remote get-url origin 2>/dev/null || true)
   [ -n "$url" ] || { echo "error: project $project is $mode but has no origin remote" >&2; return 1; }
 }

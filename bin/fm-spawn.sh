@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# Spawn a direct report: a crewmate in a treehouse or Orca worktree, or a
-# secondmate in its isolated firstmate home.
+# Spawn a direct report: a crewmate in a treehouse or Orca worktree, a crewmate in
+# a project's OWN directory (--mode project-branch), or a secondmate in its
+# isolated firstmate home.
 # Usage: fm-spawn.sh <task-id> <project-dir> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>]
+#        fm-spawn.sh <task-id> <project-dir> --mode project-branch --branch <batch-branch> --yolo <on|off> [...]
 #        fm-spawn.sh <task-id> <project-dir> --scout [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>]
 #        fm-spawn.sh <task-id> [<firstmate-home>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] --secondmate
 #   --mode and --yolo are this task's delivery contract, REQUIRED for every ship
@@ -23,6 +25,31 @@
 #   notice is printed and the spawn continues.
 #   no-mistakes-prod-only is a registry policy rather than a task mode and is
 #   refused as a flag value.
+#   --mode selects the WORKSPACE MODEL as well as the delivery path, explicitly
+#   and never by inference:
+#     isolated (every mode but project-branch) allocates a disposable copy of the
+#       project through `treehouse get` or Orca, resets it to origin's default
+#       branch tip, and returns it at teardown. The worker owns an fm/<id> branch
+#       inside it and nothing it does can reach the captain's checkout.
+#     project (--mode project-branch) runs the worker in the project directory
+#       this spawn was passed, on a batch branch the captain owns, and allocates,
+#       resets, and returns nothing. bin/fm-project-branch-lib.sh is the single
+#       owner of the refusals that replace the lost isolation, all of which run
+#       before any endpoint or record exists: the directory must not already be
+#       held by another task, the batch branch must be establishable without
+#       moving the captain off a branch he has checked out or carrying his
+#       uncommitted changes across, work never happens on the default branch, and
+#       this worker's own in-directory agent wiring must not overwrite a file the
+#       captain already has. The pane's arrival in that directory and the branch
+#       it is on are both re-proven after the terminal exists, because the captain
+#       works there too. Orca is refused for this model: its worktree is the very
+#       thing this model does without.
+#   --branch <batch-branch> is REQUIRED by, and accepted only for, --mode
+#   project-branch. A batch branch belongs to a BATCH of work rather than to one
+#   task - several tasks may land on it over its life - so nothing here or
+#   downstream derives it from the task id. A ship spawn checks it against the
+#   brief's own recorded `branch=` and refuses a mismatch, the same drift guard
+#   the mode itself gets.
 #        fm-spawn.sh <task-id> --relaunch [--harness <name>] [--model <name>] [--effort <level>]
 #   --relaunch launches a replacement agent for an EXISTING task into that
 #   task's own recorded endpoint and worktree instead of creating either. It is
@@ -140,10 +167,14 @@
 #   Before a secondmate launch, the home is fast-forwarded to the primary's
 #   default-branch commit when safe: directly for a local home, or through the
 #   configured host for a remote home. Skipped syncs warn and launch unchanged.
-#   Ship/scout spawns refuse to launch unless the resolved task path is a real
-#   git worktree root distinct from the primary project checkout.
+#   Isolated-workspace ship/scout spawns refuse to launch unless the resolved
+#   task path is a real git worktree root distinct from the primary project
+#   checkout. A project-branch spawn asserts the project directory and its batch
+#   branch instead, since that path is the project checkout by design.
 #   Before a fresh ship or scout worker starts, its clean task worktree fetches
 #   origin, resolves the current remote default branch, and resets to its tip.
+#   The project workspace is excluded from that refresh: the reset would discard
+#   the captain's own branch and working state.
 #   An unreachable origin, unresolved default branch, or non-clean worktree
 #   refuses the spawn rather than risking a PR based on stale history.
 #   A slot whose only deviation is a stale submodule gitlink is refused by that
@@ -207,10 +238,15 @@
 # items), on a config/backlog-backend=manual home, and in a home that keeps no
 # data/backlog.md. An automatic-backend home with a backlog but no compatible
 # tasks-axi refuses before creating any lifecycle state.
-# On success prints: spawned <id> harness=<name> kind=<ship|scout|secondmate> [mode=<mode> yolo=<on|off>] window=<backend-target> worktree=<path>
+# On success prints: spawned <id> harness=<name> kind=<ship|scout|secondmate> [mode=<mode> yolo=<on|off>] window=<backend-target> worktree=<path> [workspace=project branch=<batch-branch>]
 # A ship task records the explicit mode/yolo it was passed; a secondmate spawn records
 # mode=secondmate, yolo=off, home=, and projects=; a scout records neither, and both the
 # success line and state/<id>.meta omit them.
+# workspace= and branch= are written only for the project workspace, on both the
+# success line and state/<id>.meta. An ABSENT workspace= means the isolated copy,
+# so every task record predating this keeps its original meaning. worktree= stays
+# the task's working directory in both models, which is why downstream consumers
+# needed no change: for the project workspace it equals project=.
 # Every fresh spawn or relaunch records a new spawn_gen= incarnation token so durable
 # consumers can distinguish a replacement worker that reuses the same task id.
 # When the home session's frozen trace-context decision is enabled (see
@@ -309,6 +345,10 @@ fm_backlog_directory_present "$STATE" "state directory" || {
 . "$SCRIPT_DIR/fm-pr-lib.sh"
 # shellcheck source=bin/fm-dod-lib.sh
 . "$SCRIPT_DIR/fm-dod-lib.sh"
+# shellcheck source=bin/fm-tangle-lib.sh
+. "$SCRIPT_DIR/fm-tangle-lib.sh"
+# shellcheck source=bin/fm-project-branch-lib.sh
+. "$SCRIPT_DIR/fm-project-branch-lib.sh"
 # shellcheck source=bin/fm-trace-context-lib.sh
 . "$SCRIPT_DIR/fm-trace-context-lib.sh"
 # shellcheck source=bin/fm-remote-readiness-lib.sh
@@ -327,6 +367,7 @@ EFFORT=
 BACKEND_ARG=
 MODE=
 YOLO=
+BRANCH_ARG=
 TRACEPARENT_ARG=
 HARNESS_SET=0
 MODEL_SET=0
@@ -334,8 +375,14 @@ EFFORT_SET=0
 BACKEND_SET=0
 MODE_SET=0
 YOLO_SET=0
+BRANCH_SET=0
 TRACEPARENT_SET=0
 RELAUNCH=0
+# Workspace model and batch branch: defaulted here so no path can read them
+# unset under `set -u`. A fresh spawn resolves them from the delivery mode; a
+# relaunch adopts them from the task's own record.
+WORKSPACE=isolated
+BATCH_BRANCH=
 POS=()
 want_value=
 for a in "$@"; do
@@ -350,6 +397,7 @@ for a in "$@"; do
       backend) BACKEND_ARG=$a; BACKEND_SET=1 ;;
       mode) MODE=$a; MODE_SET=1 ;;
       yolo) YOLO=$a; YOLO_SET=1 ;;
+      branch) BRANCH_ARG=$a; BRANCH_SET=1 ;;
       traceparent) TRACEPARENT_ARG=$a; TRACEPARENT_SET=1 ;;
       *) echo "error: internal parser state for --$want_value" >&2; exit 1 ;;
     esac
@@ -372,6 +420,8 @@ for a in "$@"; do
     --mode=*) MODE=${a#--mode=}; MODE_SET=1 ;;
     --yolo) want_value=yolo ;;
     --yolo=*) YOLO=${a#--yolo=}; YOLO_SET=1 ;;
+    --branch) want_value=branch ;;
+    --branch=*) BRANCH_ARG=${a#--branch=}; BRANCH_SET=1 ;;
     --traceparent) want_value=traceparent ;;
     --traceparent=*) TRACEPARENT_ARG=${a#--traceparent=}; TRACEPARENT_SET=1 ;;
     *) POS+=("$a") ;;
@@ -384,6 +434,7 @@ done
 [ "$BACKEND_SET" -eq 0 ] || [ -n "$BACKEND_ARG" ] || { echo "error: --backend requires a non-empty value" >&2; exit 1; }
 [ "$MODE_SET" -eq 0 ] || [ -n "$MODE" ] || { echo "error: --mode requires a non-empty value" >&2; exit 1; }
 [ "$YOLO_SET" -eq 0 ] || [ -n "$YOLO" ] || { echo "error: --yolo requires a non-empty value" >&2; exit 1; }
+[ "$BRANCH_SET" -eq 0 ] || [ -n "$BRANCH_ARG" ] || { echo "error: --branch requires a non-empty value" >&2; exit 1; }
 [ "$TRACEPARENT_SET" -eq 0 ] || [ -n "$TRACEPARENT_ARG" ] || { echo "error: --traceparent requires a non-empty value" >&2; exit 1; }
 # A parent-delivered carrier replaces this home's own resolution, so it is
 # refused unless it is a secondmate spawn carrying a strictly valid W3C value.
@@ -412,6 +463,7 @@ if [ "$RELAUNCH" -eq 1 ]; then
   [ "$KIND_SET" -eq 0 ] || { echo "error: --relaunch reuses the task's recorded kind; --scout/--secondmate cannot override it" >&2; exit 1; }
   [ "$MODE_SET" -eq 0 ] || { echo "error: --relaunch reuses the task's recorded delivery mode; --mode cannot override it" >&2; exit 1; }
   [ "$YOLO_SET" -eq 0 ] || { echo "error: --relaunch reuses the task's recorded yolo posture; --yolo cannot override it" >&2; exit 1; }
+  [ "$BRANCH_SET" -eq 0 ] || { echo "error: --relaunch reuses the task's recorded batch branch; --branch cannot override it" >&2; exit 1; }
 else
   # Delivery contract (AGENTS.md section 7). A ship task's mode and yolo are
   # firstmate's per-task decision, so they are required and closed-set validated
@@ -427,16 +479,32 @@ else
       exit 1
     }
     case "$MODE" in
-      no-mistakes|direct-PR|local-only) ;;
+      no-mistakes|direct-PR|local-only|project-branch) ;;
       no-mistakes-prod-only)
-        echo "error: no-mistakes-prod-only is a registry policy, not a task mode; classify this task's surface and resolve it to no-mistakes or direct-PR at intake" >&2
+        echo "error: no-mistakes-prod-only is a registry policy, not a task mode; classify this task's surface and resolve it to a concrete mode at intake" >&2
         exit 1 ;;
-      *) echo "error: --mode must be one of no-mistakes, direct-PR, local-only (got '$MODE')" >&2; exit 1 ;;
+      *) echo "error: --mode must be one of no-mistakes, direct-PR, local-only, project-branch (got '$MODE')" >&2; exit 1 ;;
     esac
     case "$YOLO" in
       on|off) ;;
       *) echo "error: --yolo must be on or off (got '$YOLO')" >&2; exit 1 ;;
     esac
+    # The batch branch is what a project-branch task works on, so it is required
+    # there and refused everywhere else. Nothing derives it from the task id: a
+    # batch branch outlives any one task.
+    if [ "$MODE" = project-branch ]; then
+      [ "$BRANCH_SET" -eq 1 ] || {
+        echo "error: --mode project-branch requires --branch <batch-branch>; resolve it at intake from the branch the project directory is already on, or the branch the captain named" >&2
+        exit 1
+      }
+      fm_project_branch_name_valid "$BRANCH_ARG" || {
+        echo "error: '$BRANCH_ARG' is not a usable git branch name" >&2
+        exit 1
+      }
+    elif [ "$BRANCH_SET" -eq 1 ]; then
+      echo "error: --branch applies only to --mode project-branch; every other mode gives the worker its own disposable branch in an isolated copy" >&2
+      exit 1
+    fi
   else
     [ "$MODE_SET" -eq 0 ] || {
       echo "error: --mode applies only to ship spawns; a scout delivers a report and a secondmate records its own fixed posture" >&2
@@ -974,6 +1042,11 @@ if [ "${#POS[@]}" -gt 0 ] && [ "${POS[0]}" != "$idpart" ] && case "$idpart" in *
   # spanning several modes is two invocations rather than a silent mixed dispatch.
   [ "$MODE_SET" -eq 0 ] || shared_args+=(--mode "$MODE")
   [ "$YOLO_SET" -eq 0 ] || shared_args+=(--yolo "$YOLO")
+  # A batch shares one delivery contract, and for project-branch that includes
+  # the branch. Each pair still resolves its own project directory, so a batch
+  # spanning two projects that share a branch name is legal; two batch branches
+  # are two invocations, exactly like two modes.
+  [ "$BRANCH_SET" -eq 0 ] || shared_args+=(--branch "$BRANCH_ARG")
   for pair in "${POS[@]}"; do
     case "$pair" in
       *=*) : ;;
@@ -1086,6 +1159,14 @@ if [ "$RELAUNCH" -eq 0 ]; then
   fi
   fm_backend_validate_spawn "$BACKEND" || exit 1
   fm_backend_source "$BACKEND" || exit 1
+  # Orca's whole model is a worktree it allocates and owns, so there is no
+  # coherent way for it to run a worker in a project directory that already
+  # exists. Refused here, before any Orca runtime probe, so the message is the
+  # mode conflict rather than whatever Orca happens to say.
+  if [ "$BACKEND" = orca ] && [ "$MODE" = project-branch ]; then
+    echo "error: the orca runtime allocates its own isolated worktree, so it cannot run a project-branch task in the project's own directory; dispatch this task on another backend" >&2
+    exit 1
+  fi
   if [ "$BACKEND" = orca ] && [ "$KIND" = secondmate ]; then
     echo "error: backend=orca does not support --secondmate spawns yet" >&2
     exit 1
@@ -1157,6 +1238,13 @@ if [ "$RELAUNCH" -eq 1 ]; then
   [ -n "$KIND" ] || KIND=ship
   MODE=$(fm_meta_get "$RELAUNCH_META" mode)
   YOLO=$(fm_meta_get "$RELAUNCH_META" yolo)
+  # The workspace model and batch branch are task identity, exactly like the
+  # backend and kind: a relaunch adopts them from the record and never re-derives
+  # them, so a replacement worker can never land in a different directory or on a
+  # different branch than the work it is taking over.
+  WORKSPACE=$(fm_meta_get "$RELAUNCH_META" workspace)
+  [ -n "$WORKSPACE" ] || WORKSPACE=isolated
+  BATCH_BRANCH=$(fm_meta_get "$RELAUNCH_META" branch)
   RELAUNCH_WT=$(fm_meta_get "$RELAUNCH_META" worktree)
   [ -n "$RELAUNCH_WT" ] && [ -d "$RELAUNCH_WT" ] || {
     echo "error: task $ID's recorded worktree '${RELAUNCH_WT:-none}' is missing; refusing to relaunch without the local copy its work lives in" >&2
@@ -1832,9 +1920,13 @@ if [ "$KIND" = ship ] || [ "$KIND" = scout ]; then
   fi
 fi
 
+# project-branch runs the same full pipeline as no-mistakes and additionally waits
+# for the captain's own review of the branch, so it ranks equal to no-mistakes and
+# swapping between the two raises no rigor notice; only a drop to direct-PR or
+# local-only does.
 delivery_rigor_rank() {  # <mode> -> 3 (most rigor) .. 1 (least); 0 = not a task mode
   case "$1" in
-    no-mistakes) echo 3 ;;
+    no-mistakes|project-branch) echo 3 ;;
     direct-PR) echo 2 ;;
     local-only) echo 1 ;;
     *) echo 0 ;;
@@ -1853,6 +1945,20 @@ if [ "$KIND" = ship ]; then
   elif [ "$BRIEF_MODE" != "$MODE" ]; then
     echo "error: delivery mismatch for $ID: the brief says mode=$BRIEF_MODE but this spawn passed --mode $MODE; correct the flag or re-scaffold the brief so the worker's instructions and the task record agree" >&2
     exit 1
+  fi
+  # Same drift guard for the batch branch: a project-branch brief tells the worker
+  # which branch it may touch, so a spawn onto a different one would hand it
+  # instructions for a branch it is not on.
+  if [ "$MODE" = project-branch ] && [ -n "$BRIEF_MODE" ]; then
+    BRIEF_BRANCH=$(sed -n 's/^Delivery contract: mode=[^ ]* branch=\(.*\)$/\1/p' "$BRIEF" | head -n 1)
+    if [ -z "$BRIEF_BRANCH" ]; then
+      echo "error: $BRIEF records mode=project-branch with no branch=; re-scaffold it with bin/fm-brief.sh --mode project-branch --branch <batch-branch>" >&2
+      exit 1
+    fi
+    if [ "$BRIEF_BRANCH" != "$BRANCH_ARG" ]; then
+      echo "error: branch mismatch for $ID: the brief says branch=$BRIEF_BRANCH but this spawn passed --branch $BRANCH_ARG; correct the flag or re-scaffold the brief so the worker's instructions and the task record agree" >&2
+      exit 1
+    fi
   fi
   # The registry holds the captain's standing posture, so dropping below it is
   # allowed (a current explicit captain instruction wins) but never silent. An
@@ -1880,6 +1986,57 @@ BRIEF_REAL="$BRIEF_DIR_REAL/$(basename "$BRIEF")"
 # once here so every downstream comparison uses the same physical form
 # (docs/herdr-backend.md "Known gaps").
 PROJ_ABS_REAL=$(cd "$PROJ_ABS" 2>/dev/null && pwd -P) || PROJ_ABS_REAL="$PROJ_ABS"
+
+# Workspace model, selected here and nowhere else.
+#
+# Firstmate has exactly two, and which one a task gets is decided EXPLICITLY from
+# its delivery mode rather than inferred from a path, a project name, or the
+# backend:
+#
+#   isolated  every mode but project-branch. The worker takes a disposable copy
+#             of the project (a treehouse pool slot, or an Orca-managed worktree)
+#             and owns a per-task fm/<id> branch inside it. Nothing it does can
+#             reach the captain's own checkout, so the copy is reset on
+#             acquisition and returned at cleanup.
+#   project   mode=project-branch. The worker works in the project's OWN
+#             registered directory, on a batch branch the captain owns, while he
+#             may be working in that same directory. Nothing is allocated, reset,
+#             or returned; bin/fm-project-branch-lib.sh owns the refusals that
+#             replace the isolation, and cleanup leaves the directory untouched.
+#
+# A relaunch adopted both axes from the task's record above, so only a fresh
+# spawn resolves them.
+if [ "$RELAUNCH" -eq 0 ]; then
+  WORKSPACE=isolated
+  BATCH_BRANCH=
+  if [ "$KIND" = ship ] && [ "$MODE" = project-branch ]; then
+    WORKSPACE=project
+    BATCH_BRANCH=$BRANCH_ARG
+  fi
+fi
+
+# The project-directory dispatch guards, run BEFORE any endpoint, allocation, or
+# durable record exists so a refusal here leaves nothing behind. Each one is a
+# refusal, never a fallback: firstmate takes the message to the captain.
+if [ "$WORKSPACE" = project ]; then
+  # Backstop for a relaunch, whose backend comes from the task record rather than
+  # the flag checked at selection time. A recorded orca task can never carry
+  # workspace=project, so this can only fire on a hand-edited record.
+  if [ "$BACKEND" = orca ]; then
+    echo "error: task $ID records both the orca runtime and the project-directory workspace, which cannot both be true; inspect its task record rather than launching" >&2
+    exit 1
+  fi
+  if [ "$RELAUNCH" -eq 0 ]; then
+    fm_project_branch_require_unoccupied "$STATE" "$ID" "$PROJ_ABS" || exit 1
+    BATCH_BRANCH=$(fm_project_branch_resolve "$PROJ_ABS" "$BATCH_BRANCH") || exit 1
+    WT=$PROJ_ABS
+  fi
+  # This worker's own turn-end and busy-state wiring lives inside the working
+  # directory for several harnesses. In a disposable copy those files are ours to
+  # overwrite; here an existing file at one of those paths is the captain's, so
+  # the spawn refuses rather than clobbering it.
+  fm_project_branch_require_no_wiring_conflict "$HARNESS" "$PROJ_ABS" "$STATE" "$ID" || exit 1
+fi
 
 real_path_or_raw() {  # <path>
   local path=$1 real
@@ -2484,7 +2641,42 @@ if [ "$RELAUNCH" -eq 1 ]; then
     echo "error: task $ID's endpoint is in '${relaunch_seen:-unknown}', not its recorded worktree '$WT'; refusing to relaunch an agent outside the copy holding its work" >&2
     exit 1
   fi
-  [ "$KIND" = secondmate ] || validate_spawn_worktree "relaunch" "$T"
+  if [ "$WORKSPACE" = project ]; then
+    fm_project_branch_require_on_branch "$WT" "$BATCH_BRANCH" || exit 1
+  elif [ "$KIND" != secondmate ]; then
+    validate_spawn_worktree "relaunch" "$T"
+  fi
+elif [ "$WORKSPACE" = project ]; then
+  # No allocation and no `treehouse get`: the pane was created in the project's
+  # own directory and that is where the work belongs. What still has to be PROVEN
+  # is that the pane really settled there, because every worktree-resident hook
+  # below is written relative to it - a pane reporting a stale path would tangle
+  # this task's wiring into an unrelated checkout. Two consecutive agreeing reads,
+  # for the same reason the isolated path requires them.
+  project_settled=0
+  project_candidate=""
+  for _ in $(seq 1 60); do
+    p=$(spawn_current_path "$WT_TARGET" || true)
+    if [ -n "$p" ] && [ "$(real_path_or_raw "$p")" = "$PROJ_ABS_REAL" ]; then
+      if [ -n "$project_candidate" ]; then
+        project_settled=1
+        break
+      fi
+      project_candidate=$PROJ_ABS_REAL
+    else
+      project_candidate=""
+    fi
+    sleep 1
+  done
+  if [ "$project_settled" -ne 1 ]; then
+    echo "error: task $ID's terminal did not settle in the project directory $PROJ_ABS within 60s; inspect window $T" >&2
+    exit 1
+  fi
+  # The branch is re-read here, after the terminal exists, because the captain
+  # works in this same directory and may have moved it between the guard above
+  # and now. Launching a worker onto a branch its instructions do not name is the
+  # one thing this mode must never do.
+  fm_project_branch_require_on_branch "$WT" "$BATCH_BRANCH" || exit 1
 elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
   spawn_send_text_line "$WT_TARGET" 'treehouse get'
 
@@ -2534,7 +2726,11 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
 
   validate_spawn_worktree "treehouse get" "$T"
 fi
-if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ]; then
+# Refreshing the base hard-resets the working copy onto origin's default branch.
+# That is right for a pooled slot nobody owns and catastrophic in the captain's
+# own directory on his own batch branch, so the project workspace is excluded
+# here rather than guarded inside the refresh.
+if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ] && [ "$WORKSPACE" != project ]; then
   freshen_spawn_worktree_base "$WT" || exit 1
 fi
 
@@ -2549,7 +2745,10 @@ mkdir -p "$TASK_TMP/gotmp"
 # Per-harness turn-end hook where enabled: a file that touches
 # state/<id>.turn-ended when the agent finishes a turn. Worktree-resident hooks
 # and token pointers stay out of git's view so they never block teardown's dirty
-# check or leak into a commit.
+# check or leak into a commit. In the project workspace that exclusion matters
+# more, not less: it is what keeps this worker's wiring out of the captain's own
+# `git status`. The entry is one additive, idempotent line in the repository's
+# local exclude file and is the only trace this model leaves behind.
 mkdir -p "$STATE"
 STATE_REAL=$(cd "$STATE" && pwd -P)
 TURNEND="$STATE_REAL/$ID.turn-ended"
@@ -2557,6 +2756,13 @@ exclude_path() {
   local rel=$1 EXCL
   EXCL=$(git -C "$WT" rev-parse --git-path info/exclude 2>/dev/null || true)
   [ -n "$EXCL" ] || return 0
+  # `rev-parse --git-path` answers relative to the REPOSITORY, not to this
+  # process's cwd: an ordinary clone (which is what the project workspace works
+  # in) returns a bare `.git/info/exclude`, while a linked worktree returns an
+  # absolute path. Resolving a relative answer against $WT is what keeps this
+  # from creating a stray `.git` under whatever directory fm-spawn happens to be
+  # running in.
+  case $EXCL in /*) ;; *) EXCL="$WT/$EXCL" ;; esac
   mkdir -p "$(dirname "$EXCL")"
   grep -qxF "$rel" "$EXCL" 2>/dev/null || echo "$rel" >> "$EXCL"
 }
@@ -2911,7 +3117,7 @@ SPAWN_META_PATH=$SPAWN_META_TMP
 preserve_relaunch_meta() {
   awk -F= '
     BEGIN {
-      split("window endpoint_task_id worktree project harness kind mode yolo tasktmp model effort busy_gen spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
+      split("window endpoint_task_id worktree project harness kind mode yolo workspace branch tasktmp model effort busy_gen spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
       for (i in keys) owned[keys[i]] = 1
     }
     !($1 in owned)
@@ -2926,6 +3132,15 @@ preserve_relaunch_meta() {
   echo "kind=$KIND"
   [ -z "$MODE" ] || echo "mode=$MODE"
   [ -z "$YOLO" ] || echo "yolo=$YOLO"
+  # workspace=project marks the project-directory model; an ABSENT workspace= is
+  # the historical isolated copy, so every task record written before this
+  # existed keeps its original meaning. branch= is the batch branch and is
+  # written only for that model - no other mode has one, and no consumer may
+  # derive it from the task id.
+  if [ "$WORKSPACE" = project ]; then
+    echo "workspace=project"
+    echo "branch=$BATCH_BRANCH"
+  fi
   echo "tasktmp=$TASK_TMP"
   echo "model=${MODEL:-default}"
   echo "effort=${EFFORT:-default}"
@@ -3215,4 +3430,8 @@ fi
 
 SPAWN_DELIVERY=
 [ -z "$MODE" ] || SPAWN_DELIVERY=" mode=$MODE yolo=$YOLO"
-echo "spawned $ID harness=$HARNESS kind=$KIND$SPAWN_DELIVERY window=$META_WINDOW worktree=$WT"
+# The isolated model stays byte-identical on the success line: only the project
+# workspace adds its two fields, so nothing that parses today's output changes.
+SPAWN_WORKSPACE=
+[ "$WORKSPACE" != project ] || SPAWN_WORKSPACE=" workspace=project branch=$BATCH_BRANCH"
+echo "spawned $ID harness=$HARNESS kind=$KIND$SPAWN_DELIVERY window=$META_WINDOW worktree=$WT$SPAWN_WORKSPACE"

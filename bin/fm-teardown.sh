@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Tear down a finished task: return the treehouse worktree, release the Orca
-# worktree, or retire a secondmate home; kill the recorded runtime endpoint,
+# worktree, leave a project-branch task's project directory completely alone, or
+# retire a secondmate home; kill the recorded runtime endpoint,
 # clear volatile state, and transition this home's backlog item for ship and
 # scout tasks before reporting success (a secondmate teardown transitions none,
 # since secondmates are not backlog items), then refresh/prune the project's
@@ -29,6 +30,17 @@
 # lift the deferral (it authorizes discarding unlanded WORK, never the
 # captain's question), and bin/fm-captain-hold.sh answer stays the only act
 # that closes the call.
+# A task recorded as workspace=project (mode=project-branch; bin/fm-spawn.sh's
+# header owns the field) worked in the captain's OWN project directory, so
+# cleanup there allocates, resets, detaches, deletes, returns, and refreshes
+# NOTHING: the directory, the batch branch, and every commit on it are left
+# exactly as they are, and the only file removed is this task's own agent wiring,
+# and only where bin/fm-project-branch-lib.sh can prove it is ours rather than a
+# file of the captain's at the same path. Because nothing is destroyed, the
+# landed-work test below does not apply; the gate that does is uncommitted
+# changes, which mean a half-finished edit or the captain working there right now
+# - a stop-and-report either way. --force there releases the task without
+# discarding anything.
 # REFUSES if the worktree holds work that has not LANDED, because cleanup
 # hard-resets/removes the worktree and kills its processes. Work has landed when it is
 # reachable from any remote-tracking branch (a fork counts as a remote, so
@@ -181,6 +193,8 @@ SUB_HOME_PARENT_MARKER=".fm-secondmate-parent"
 . "$SCRIPT_DIR/fm-backend.sh"
 # shellcheck source=bin/fm-control-lib.sh
 . "$SCRIPT_DIR/fm-control-lib.sh"
+# shellcheck source=bin/fm-project-branch-lib.sh
+. "$SCRIPT_DIR/fm-project-branch-lib.sh"
 # shellcheck source=bin/fm-lock-lib.sh
 . "$SCRIPT_DIR/fm-lock-lib.sh"
 # shellcheck source=bin/fm-classify-lib.sh
@@ -774,6 +788,16 @@ CLEANUP_RECOVERY=$TEARDOWN_CLEANUP_RECOVERY
 KIND=$TEARDOWN_META_KIND
 MODE=$(grep '^mode=' "$META" | cut -d= -f2- || true)
 [ -n "$MODE" ] || MODE=no-mistakes
+# Which workspace model this task used. An absent workspace= is the historical
+# isolated copy, so every task record written before the project model existed
+# keeps its original meaning. bin/fm-spawn.sh's header owns both fields.
+WORKSPACE=$(fm_meta_get "$META" workspace)
+[ -n "$WORKSPACE" ] || WORKSPACE=isolated
+BATCH_BRANCH=$(fm_meta_get "$META" branch)
+# fm-spawn embeds the PHYSICAL state path in the wiring it writes, so the
+# content proof that a wiring file is this task's own has to resolve the same
+# way or it would never match and every file would be conservatively retained.
+STATE_REAL_FOR_WIRING=$(CDPATH='' cd -- "$STATE" 2>/dev/null && pwd -P) || STATE_REAL_FOR_WIRING=$STATE
 PUBLIC_FOLLOWUP_HOME=$FM_HOME
 PUBLIC_FOLLOWUP_STATE=$STATE
 PUBLIC_FOLLOWUP_WORK_HOME=main
@@ -1441,10 +1465,40 @@ teardown_treehouse_return() {
   return 1
 }
 
+# The landed-work gate exists because ordinary cleanup hard-resets and returns the
+# worker's copy, so anything not reachable elsewhere would be destroyed. The
+# project workspace destroys nothing: cleanup leaves the captain's directory, its
+# branch, and its commits exactly as they are. So the gate that applies there is a
+# different one - commits on the batch branch are durable in the captain's own
+# repo and never block cleanup, while UNCOMMITTED changes mean either the worker
+# was interrupted mid-edit or the captain is working in that directory right now,
+# and killing the agent under either is a stop-and-report. --force still discards
+# nothing here; it only says "release the task anyway".
+validate_project_directory_teardown_safety() {
+  local dirty_raw
+  [ -d "$WT" ] || return 0
+  [ "$FORCE" != "--force" ] || return 0
+  if ! dirty_raw=$(git -C "$WT" status --porcelain 2>/dev/null); then
+    echo "REFUSED: cannot inspect the project directory $WT for uncommitted changes." >&2
+    echo "Nothing is removed or reset here; restore the git index state and retry." >&2
+    return 1
+  fi
+  if [ -n "$dirty_raw" ]; then
+    echo "REFUSED: the project directory $WT has uncommitted changes on ${BATCH_BRANCH:-its current branch}." >&2
+    printf '%s\n' "$dirty_raw" | head -10 >&2
+    echo "They may be the captain's or a half-finished edit. Nothing here stashes, resets, or discards; reconcile with the captain, or release the task anyway with --force (which still leaves this directory untouched)." >&2
+    return 1
+  fi
+}
+
 validate_worktree_teardown_safety() {
   local dirty_raw dirty unpushed_raw unpushed DEFAULT unmerged_raw unmerged branch
   [ -d "$WT" ] || return 0
   [ "$FORCE" != "--force" ] || return 0
+  if [ "$WORKSPACE" = project ]; then
+    validate_project_directory_teardown_safety
+    return
+  fi
   case "$KIND" in
     secondmate|scout) return 0 ;;
   esac
@@ -2783,6 +2837,25 @@ if [ "$BACKEND" = orca ] && [ "$KIND" != secondmate ]; then
   fi
   [ -z "$T_ORCA" ] || fm_backend_kill "$BACKEND" "$T" "$(meta_value "$META" zellij_tab_id)" "fm-$ID" 2>/dev/null || true
   fm_backend_remove_worktree "$BACKEND" "$ORCA_WORKTREE_ID"
+elif [ "$WORKSPACE" = project ] && [ "$KIND" != secondmate ]; then
+  # The captain's own directory. Nothing here is detached, reset, deleted, or
+  # returned: the directory, the batch branch, and every commit on it stay exactly
+  # as they are, because they are his and because the next task on this batch will
+  # pick up from them. The ONLY thing cleaned up is this task's own agent wiring,
+  # and only where it can be proven ours rather than a file of the captain's that
+  # happens to share a path (bin/fm-project-branch-lib.sh owns that proof).
+  if [ -d "$WT" ]; then
+    while IFS= read -r wiring_path; do
+      [ -n "$wiring_path" ] || continue
+      if fm_project_branch_wiring_is_ours "$wiring_path" "$STATE_REAL_FOR_WIRING" "$ID"; then
+        rm -f -- "$wiring_path" || echo "warning: could not remove this task's agent wiring at $wiring_path" >&2
+      else
+        echo "warning: leaving $wiring_path in place: it cannot be proven to be this task's own agent wiring" >&2
+      fi
+    done <<EOF
+$(fm_project_branch_wiring_present "$(meta_value "$META" harness)" "$WT" "$STATE_REAL_FOR_WIRING" "$ID")
+EOF
+  fi
 elif [ -d "$WT" ] && [ "$KIND" != secondmate ]; then
   branch=$(git -C "$WT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)
   if [ "$branch" != "HEAD" ]; then
@@ -2957,7 +3030,12 @@ else
 fi
 fm_lock_release "$META_LOCK"
 META_LOCK_HELD=0
-if [ "$KIND" != scout ] && [ "$KIND" != secondmate ] && [ "$MODE" != local-only ]; then
+# Refreshing a clone fast-forwards its checked-out default branch. For the project
+# workspace that clone is the captain's own, deliberately sitting on his batch
+# branch, so a refresh would only report it as drift; he owns when that directory
+# moves.
+if [ "$KIND" != scout ] && [ "$KIND" != secondmate ] && [ "$MODE" != local-only ] \
+   && [ "$WORKSPACE" != project ]; then
   "$FM_ROOT/bin/fm-fleet-sync.sh" "$PROJ" || true
 fi
 # A secondmate retirement may remove the home containing an overridden control

@@ -5,11 +5,16 @@
 # receives. Both paths must hand the worker the same contract: a promoted
 # no-mistakes worker that never received the ask-user escalation rule or the
 # `--yes` ban is the exact delivery hole this single owner exists to close.
-# fm_dod_block <no-mistakes|direct-PR|local-only> <task-id> prints the block on
-# stdout with no trailing blank line. The caller validates the mode; an unknown
-# mode is refused rather than silently rendered as the pipeline contract.
+# fm_dod_block <no-mistakes|direct-PR|local-only|project-branch> <task-id>
+# [<batch-branch>] prints the block on stdout with no trailing blank line. The
+# caller validates the mode; an unknown mode is refused rather than silently
+# rendered as the pipeline contract. project-branch REQUIRES the batch branch as
+# the third argument and refuses without it, because that mode's whole contract is
+# a branch the captain already owns rather than one derived from the task id.
 # The block opens with the fixed machine-readable "Delivery contract: mode=<mode>"
-# line that bin/fm-spawn.sh checks a ship brief against.
+# line that bin/fm-spawn.sh checks a ship brief against; the project-branch form
+# extends that same line with " branch=<batch-branch>", which the spawn checks
+# too so the brief's branch and the dispatched branch can never drift apart.
 # This file is the one owner of the no-mistakes `--intent` contract: only the
 # brief's `## Captain's intent` subsection plus later captain words, never
 # `## Firstmate spec` and never the worker's own tradeoffs. bin/fm-brief.sh
@@ -160,8 +165,31 @@ fm_brief_task_content_valid() {  # <file>
   [ -n "$(printf '%s' "$task" | tr -d '[:space:]')" ]
 }
 
-fm_dod_block() {  # <mode> <task-id>
-  local mode=$1 id=$2
+# The no-mistakes pipeline guidance, shared verbatim by every mode that runs the
+# pipeline. Extracted so mode=no-mistakes and mode=project-branch cannot drift:
+# two hand-maintained copies of the ask-user escalation rule and the `--yes` ban
+# would be exactly the delivery hole this file exists to close.
+fm_dod_no_mistakes_pipeline_guidance() {
+  cat <<'EOF'
+You drive no-mistakes by responding to its gates, not by implementing fixes.
+Follow the guidance no-mistakes itself provides for the mechanics: it loads when you invoke /no-mistakes, and `no-mistakes axi run --help` plus the `help` lines in each `axi` response are authoritative and version-matched to the installed binary.
+When starting no-mistakes, pass `--intent` as only this brief's `## Captain's intent` subsection plus any later words the captain actually said.
+For a legacy brief with no such subsection, include only words explicitly labeled `Captain:`, `Captain's words:`, `Captain's ask:`, or `Captain's intent:`; never copy its mixed `# Task` wholesale. If it has no provenance-marked captain words, stop and ask firstmate instead of starting no-mistakes.
+Do not include `## Firstmate spec`, later Firstmate build constraints, or your own decisions and tradeoffs.
+This replaces the no-mistakes skill's advice to enrich `--intent` with decisions and tradeoffs; that advice does not apply to Firstmate-dispatched work.
+Do not hand-edit, commit, or fix findings yourself while a run is active - the pipeline applies every fix.
+
+Two firstmate-specific rules layer on top of that guidance:
+- ask-user findings are never yours to answer: escalate to firstmate (rule 6) and stop.
+  Firstmate applies `ask-user-authority` and obtains any required captain decision.
+  When the decision comes back, feed it to the gate with `no-mistakes axi respond` and let the pipeline apply it - do not route the question to "the user" or implement the fix yourself.
+- NEVER pass `--yes` (or `-y`) to `no-mistakes axi run` or `no-mistakes axi respond`. It is banned fleet-wide.
+  It auto-resolves every gate including ask-user findings with no escalation, and answering your own ask-user finding is a hard rule violation.
+EOF
+}
+
+fm_dod_block() {  # <mode> <task-id> [<batch-branch>]
+  local mode=$1 id=$2 branch=${3-}
   case "$mode" in
     direct-PR)
       cat <<EOF
@@ -192,23 +220,47 @@ The task is complete only when committed on your branch.
 When you believe it is complete, append \`done: {summary}\` to the status file and stop.
 Firstmate will then instruct you to run /no-mistakes to validate and ship a PR.
 
-You drive no-mistakes by responding to its gates, not by implementing fixes.
-Follow the guidance no-mistakes itself provides for the mechanics: it loads when you invoke /no-mistakes, and \`no-mistakes axi run --help\` plus the \`help\` lines in each \`axi\` response are authoritative and version-matched to the installed binary.
-When starting no-mistakes, pass \`--intent\` as only this brief's \`## Captain's intent\` subsection plus any later words the captain actually said.
-For a legacy brief with no such subsection, include only words explicitly labeled \`Captain:\`, \`Captain's words:\`, \`Captain's ask:\`, or \`Captain's intent:\`; never copy its mixed \`# Task\` wholesale. If it has no provenance-marked captain words, stop and ask firstmate instead of starting no-mistakes.
-Do not include \`## Firstmate spec\`, later Firstmate build constraints, or your own decisions and tradeoffs.
-This replaces the no-mistakes skill's advice to enrich \`--intent\` with decisions and tradeoffs; that advice does not apply to Firstmate-dispatched work.
-Do not hand-edit, commit, or fix findings yourself while a run is active - the pipeline applies every fix.
-
-Two firstmate-specific rules layer on top of that guidance:
-- ask-user findings are never yours to answer: escalate to firstmate (rule 6) and stop.
-  Firstmate applies \`ask-user-authority\` and obtains any required captain decision.
-  When the decision comes back, feed it to the gate with \`no-mistakes axi respond\` and let the pipeline apply it - do not route the question to "the user" or implement the fix yourself.
-- NEVER pass \`--yes\` (or \`-y\`) to \`no-mistakes axi run\` or \`no-mistakes axi respond\`. It is banned fleet-wide.
-  It auto-resolves every gate including ask-user findings with no escalation, and answering your own ask-user finding is a hard rule violation.
+EOF
+      fm_dod_no_mistakes_pipeline_guidance
+      cat <<EOF
 
 After /no-mistakes reports CI green (the CI-ready return point - do not wait for it to keep monitoring in the background until merge), append \`done: PR {url} checks green\` and stop. You are finished.
 EOF
+      ;;
+    project-branch)
+      if [ -z "$branch" ]; then
+        echo "error: fm_dod_block: mode=project-branch requires the batch branch as its third argument; a project-branch task never derives its branch from the task id" >&2
+        return 1
+      fi
+      cat <<EOF
+# Definition of done
+Delivery contract: mode=project-branch branch=$branch
+This task ships **project-branch**: you work in the captain's own project directory, on the shared batch branch \`$branch\`, and the PR waits for his word.
+Several tasks may land on \`$branch\` over time, so it is a batch branch, not this task's branch - never rename it, never derive a branch name from this task's id, and never open a second branch for your own work.
+
+## Stage 1 - build it, then report ready and WAIT
+Iterate as long as you need: build, run, test, fix, repeat, committing to \`$branch\` as you go.
+The task is complete for this stage only when your work is committed on \`$branch\`.
+Do NOT run /no-mistakes yet. Do NOT push. Do NOT open a PR. Do NOT bump the version yet.
+When you are happy with the work, append \`done: ready on branch $branch - {summary}\` to the status file and stop.
+Then wait: the captain reviews the branch himself and decides when the batch is finished. Firstmate relays his word.
+
+## Stage 2 - only after firstmate relays the captain's word to open the PR
+Do nothing in this stage until that instruction actually arrives.
+
+1. Bump the project's version, on \`$branch\`, so the PR the captain reviews already contains it.
+   Detect this project's own versioning mechanism from the project itself - the file, tag, or script it actually uses - rather than assuming a scheme.
+   If you cannot determine it with confidence, append \`needs-decision: version bump mechanism unclear - {what you found}\` and stop. Never guess and never invent a versioning scheme.
+2. Run \`no-mistakes doctor\`; if it reports the repo is not initialized here, run \`no-mistakes init\`.
+   This is deliberately here and not at setup: nothing touches the captain's directory until the work is actually going out.
+3. Run /no-mistakes on \`$branch\` and let the pipeline fix what it finds.
+4. The pipeline pushes \`$branch\` and opens the PR into the default branch.
+
+After /no-mistakes reports CI green (the CI-ready return point - do not wait for it to keep monitoring in the background until merge), append \`done: PR {url} checks green\` and stop. You are finished.
+The captain merges that PR himself and runs the deploy; you never merge and never commit to the default branch.
+
+EOF
+      fm_dod_no_mistakes_pipeline_guidance
       ;;
     *)
       echo "error: fm_dod_block: unknown delivery mode '$mode'" >&2
