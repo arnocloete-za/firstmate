@@ -41,10 +41,11 @@ Choose that posture when adding or creating the project:
 - `no-mistakes` runs the full validation pipeline before a PR.
 - `direct-PR` pushes and opens a PR without the no-mistakes pipeline.
 - `local-only` has no required remote or PR and lands only through the approved local fast-forward path.
-- `project-branch` runs the pipeline and opens a PR like `no-mistakes`, but the work happens in this project's own registered directory on a batch branch the captain owns, and the PR waits for his word.
+- `project-branch` runs the same review pipeline as `no-mistakes`, but the work happens in this project's own registered directory on a batch branch the captain owns, and it ends at ready for a pull request rather than at an open one.
   Register it for a project the captain works in himself and wants his crew working alongside him in, on his own branches.
   It is remote-backed and pipeline-based, so it needs an `origin` remote and completes the same initialization as `no-mistakes`.
-  One piece of work at a time per such project: dispatch refuses a second worker into an occupied directory, and that refusal is a question for the captain rather than something to route around.
+  One piece of work at a time per such project: a project that is not on its own default branch is treated as occupied, whether a worker or the captain has it, and dispatch blocks and names the branch holding it.
+  That block is a question for the captain rather than something to route around.
   A `project-branch` project stays with the main firstmate and cannot be routed to a second mate, whose separate clone is by definition not the captain's own directory.
 - `no-mistakes-prod-only` is a conditional policy rather than one flat mode: genuinely internal-only tooling, automation, contributor or operator process, and release or submission work ships `direct-PR`, while product-facing, mixed, and uncertain work ships `no-mistakes`.
 
