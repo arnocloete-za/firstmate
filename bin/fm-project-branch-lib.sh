@@ -14,12 +14,21 @@
 # provide therefore has to be re-established here, as refusals, and this file is
 # where they live so no caller re-derives them:
 #
-#   1. The directory is never worked on while another task already holds it.
+#   1. A project that is not on its own default branch is OCCUPIED, full stop.
+#      The captain's rule: "we assume another agent is still busy or I'm still busy
+#      on it and it should block it and inform me that it is blocked." So the gate
+#      is the project's own git state, never firstmate's bookkeeping, and it
+#      deliberately does NOT distinguish a crewmate holding the branch from the
+#      captain holding it - the second case is the one bookkeeping would miss.
 #   2. Work never happens on the default branch.
-#   3. The captain is never switched off the branch he has checked out.
-#   4. Nothing is stashed, reset, cleaned, or discarded - a directory whose state
+#   3. Nothing is stashed, reset, cleaned, or discarded - a directory whose state
 #      is not ours is a refusal, never an obstacle to clear.
-#   5. Per-task agent wiring never overwrites a file the captain already has.
+#   4. Per-task agent wiring never overwrites a file the captain already has.
+#
+# The default branch is resolved per project by fm_default_branch() from
+# bin/fm-tangle-lib.sh - the same single resolver bin/fm-dashboard-snapshot.sh
+# uses - because registered projects sit on master, main, develop and test alike
+# and nothing here may assume one name.
 #
 # A batch branch belongs to a BATCH of work, not to a task: several tasks may land
 # on one branch over its life. Nothing here derives a branch name from a task id,
@@ -73,36 +82,48 @@ fm_project_branch_occupants() {  # <state-dir> <this-task-id> <dir>
 }
 
 # Refuse the dispatch when another task already holds <dir>, naming it so
-# firstmate can ask the captain instead of running two workers in one directory.
+# firstmate can ask the captain about a specific piece of work.
+#
+# This runs BEFORE the git-state gate and is strictly additional to it: the
+# authoritative occupancy signal is the project's own branch, and this only adds
+# the better message available when firstmate does have a record of the task
+# holding the directory. It can never substitute for the git-state gate, which is
+# what catches the captain holding the project himself.
 fm_project_branch_require_unoccupied() {  # <state-dir> <this-task-id> <dir>
   local state=$1 self=$2 dir=$3 occupants
   occupants=$(fm_project_branch_occupants "$state" "$self" "$dir")
   [ -n "$occupants" ] || return 0
   {
-    echo "error: project directory $dir is already held by $(printf '%s' "$occupants" | tr '\n' ' ' | sed 's/ $//')"
-    echo "A project-branch task works in the captain's own directory, so two workers cannot share it."
-    echo "Ask the captain whether to wait for that task, put this work on the same branch after it, or use a different project."
+    echo "error: OCCUPIED: project directory $dir is already held by $(printf '%s' "$occupants" | tr '\n' ' ' | sed 's/ $//')"
+    echo "One piece of work at a time per project, so two workers cannot share it."
+    echo "Nothing was created or changed. Ask the captain whether to wait for that task or use a different project."
   } >&2
   return 1
 }
 
-# Resolve - and where the captain has authorized it, establish - the batch branch
-# for <dir>. Prints the resolved branch name on success.
+# Establish the batch branch for <dir>, printing its name on success.
 #
-# Resolution order, per the captain's own flow:
-#   - the branch the directory is already on, when that is not the default branch
-#   - otherwise the branch the captain named, created from the clean default
-#     checkout
+# The captain's loop is one branch at a time: branch off the default, finish it,
+# merge it, branch again. So this refuses unless the project is sitting on its own
+# default branch with a clean tree, and then creates or checks out the named batch
+# branch from there. Being off the default branch is not drift to reconcile - it is
+# the signal that this project is already occupied, by a crewmate or by the captain
+# himself, and the only correct response is to stop and say so.
 #
 # Refusals, none of which a caller may soften:
 #   - not a clone root, or no resolvable default branch
-#   - detached HEAD (no branch to adopt and none named)
-#   - on the default branch with no branch named
-#   - a named branch that conflicts with the non-default branch already checked
-#     out: the captain's checked-out branch is never switched away from here
-#   - a switch that would carry uncommitted changes across
+#   - already on any branch other than the default one, or at a detached HEAD:
+#     OCCUPIED, reported with the branch that holds it
+#   - uncommitted changes on the default branch (see below)
 #   - the default branch named as the batch branch
-fm_project_branch_resolve() {  # <dir> <requested-branch-or-empty>
+#   - an unusable branch name, or a branch that cannot be established
+#
+# Dirty-on-default is a deliberate refusal rather than an oversight. `checkout -b`
+# carries uncommitted changes onto the new branch, so proceeding would silently mix
+# the captain's in-progress work into the crew's batch branch and into the PR he
+# later reviews, and the alternative - stashing it aside - is exactly what this
+# model may never do. It is reported as its own condition, not as occupancy.
+fm_project_branch_resolve() {  # <dir> <requested-branch>
   local dir=$1 requested=${2-} default current status
   if ! fm_project_branch_dir_is_clone_root "$dir"; then
     echo "error: $dir is not the root of its own git clone; a project-branch task works in the project's own registered directory" >&2
@@ -112,31 +133,29 @@ fm_project_branch_resolve() {  # <dir> <requested-branch-or-empty>
     echo "error: cannot determine the default branch of $dir (expected origin/HEAD, main, or master); refusing rather than guessing which branch is off limits" >&2
     return 1
   fi
-  if [ -n "$requested" ] && ! fm_project_branch_name_valid "$requested"; then
+  if [ -z "$requested" ]; then
+    echo "error: no batch branch was named for $dir; resolve it at intake and pass it explicitly" >&2
+    return 1
+  fi
+  if ! fm_project_branch_name_valid "$requested"; then
     echo "error: '$requested' is not a usable git branch name" >&2
     return 1
   fi
-  if [ -n "$requested" ] && [ "$requested" = "$default" ]; then
+  if [ "$requested" = "$default" ]; then
     echo "error: '$requested' is $dir's default branch; work never happens on the default branch" >&2
     return 1
   fi
   current=$(git -C "$dir" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
   if [ -z "$current" ]; then
-    echo "error: $dir is on a detached HEAD, so there is no batch branch to adopt; ask the captain which branch this work belongs on and pass it explicitly" >&2
+    echo "error: OCCUPIED: $dir is not on its default branch '$default' - it is at a detached HEAD" >&2
+    echo "A project that is not on its default branch is treated as already busy, whether a worker or the captain has it." >&2
+    echo "Nothing was created or changed. Report this to the captain and let him say how to proceed." >&2
     return 1
   fi
   if [ "$current" != "$default" ]; then
-    if [ -n "$requested" ] && [ "$requested" != "$current" ]; then
-      echo "error: $dir is on branch '$current' but this dispatch names '$requested'; the captain's checked-out branch is never switched away from here" >&2
-      echo "Confirm with the captain which branch this work belongs on, and dispatch against the branch his directory is actually on." >&2
-      return 1
-    fi
-    printf '%s\n' "$current"
-    return 0
-  fi
-  if [ -z "$requested" ]; then
-    echo "error: $dir is on its default branch '$default' and no batch branch was named; work never happens on the default branch" >&2
-    echo "Ask the captain which branch this batch of work belongs on and pass it explicitly." >&2
+    echo "error: OCCUPIED: $dir is on branch '$current', not its default branch '$default'" >&2
+    echo "A project that is not on its default branch is treated as already busy, whether a worker or the captain has it." >&2
+    echo "Nothing was created or changed. Tell the captain this project is occupied by branch '$current' and let him say how to proceed." >&2
     return 1
   fi
   if ! status=$(git -C "$dir" -c core.quotePath=false status --porcelain 2>/dev/null); then
@@ -144,7 +163,7 @@ fm_project_branch_resolve() {  # <dir> <requested-branch-or-empty>
     return 1
   fi
   if [ -n "$status" ]; then
-    echo "error: $dir has uncommitted changes on '$default', so moving it onto '$requested' would carry them across" >&2
+    echo "error: $dir has uncommitted changes on its default branch '$default', so creating '$requested' here would carry them onto the batch branch" >&2
     echo "Nothing here stashes, resets, or discards; report the uncommitted changes to the captain and let him decide." >&2
     return 1
   fi

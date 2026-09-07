@@ -41,10 +41,12 @@
 #   direct-PR    implement -> push + open PR via gh-axi (no pipeline) -> configured merge authority
 #   local-only   implement on branch, stop and report "ready in branch" (no push/PR);
 #                the configured merge authority approves, firstmate merges to local main
-#   project-branch  implement in the project's OWN registered directory, on a shared
-#                batch branch the captain owns, report ready and wait; only on his
-#                relayed word does the worker bump the version, run the pipeline, and
-#                open the PR. Requires --branch and refuses without it.
+#   project-branch  implement in the project's OWN registered directory, on a batch
+#                branch the captain owns. The worker announces the branch, builds,
+#                bumps the version, runs the review pipeline with push/PR/CI skipped,
+#                then stops at "ready for a pull request" - a green pipeline never
+#                opens one. Only his relayed word releases the PR run.
+#                Requires --branch and refuses without it.
 # no-mistakes-prod-only is a registry policy, not a task mode; resolve it to one of
 # the four concrete modes at intake before calling this script.
 # --branch <batch-branch> is REQUIRED by (and accepted only for) --mode project-branch.
@@ -480,6 +482,9 @@ Your batch branch is \`$BRANCH\`. It belongs to a batch of work rather than to t
 
 If the branch is not \`$BRANCH\`, or the top level is not this project's own directory, STOP - do not branch, commit, switch, or clean anything - append \`blocked: project directory is not on branch $BRANCH\` to the status file and stop.
 
+Once that checks out, announce the branch before touching any code: this project is now occupied and the captain has to know by what.
+The Definition of done's stage 1 is that announcement and it is your first status line.
+
 **Never destroy the captain's work.** This contract replaces the isolation you do not have here, and none of it bends for convenience:
 
 - Never \`git stash\`, \`reset\`, \`restore\`, \`checkout --\`, \`clean\`, \`revert\`, or force anything you did not create in this task.
@@ -487,7 +492,7 @@ If the branch is not \`$BRANCH\`, or the top level is not this project's own dir
 - Never commit to, push to, or check out the default branch.
 - Uncommitted changes that are not yours are a stop-and-report, not an obstacle to clear: append \`blocked: {what you found}\` and stop.
 - Commit your own work to \`$BRANCH\` as you go, so an interruption can never lose it and the captain can always see where you are."
-    RULE1="1. Never push anything and never open a PR until firstmate relays the captain's word (see the Definition of done). Never merge, and never touch the default branch."
+    RULE1="1. Never push and never open a PR. A green pipeline is not authority to do either; only a captain instruction relayed by firstmate is (see the Definition of done). Never merge, and never touch the default branch."
     RULE2="2. Work only in this project directory, on \`$BRANCH\`; modify nothing outside it."
     MEMORY_WHERE='in the project directory'
     ;;

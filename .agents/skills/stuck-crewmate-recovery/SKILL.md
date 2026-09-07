@@ -32,6 +32,9 @@ A no-mistakes run matched to the crew's branch and current code remains authorit
 
 When no authoritative run accounts for the task, inspect only its recorded backend and worktree inventory.
 Use `treehouse status` for treehouse-backed tmux, herdr, zellij, or cmux tasks, and use the recorded `orca_worktree_id=` and `terminal=` for Orca tasks.
+A task recorded `workspace=project` has neither: its working directory is the project's own registered clone and its `branch=` is the captain's batch branch, so there is no pool slot or Orca worktree to account for and nothing to reallocate.
+Reconcile that one by confirming the directory is still that clone and still on the recorded branch; the relaunch path refuses on its own if it is not.
+If the captain has moved that directory or left uncommitted changes in it, reconcile with him rather than switching it back or clearing them, and never dispatch a second worker into it.
 Do not sweep another home's endpoints or infer ownership from a matching window label.
 
 Before relaunch, prove that no live agent still owns the recorded task and that the existing worktree remains available.

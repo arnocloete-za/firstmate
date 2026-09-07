@@ -298,8 +298,9 @@ Pass the mode explicitly to the brief, and pass both values explicitly to the sp
 A current explicit captain instruction wins; otherwise the project's registry entry is the captain's standing posture, and dropping below its rigor needs a reason you can state.
 On a `no-mistakes-prod-only` project, classify the task's surface: internal-only tooling, automation, contributor or operator process, and release or submission work ships `direct-PR`, while product-facing, mixed, and uncertain work ships `no-mistakes`; never infer internal-only from file location or project name.
 An unregistered project or absent registry resolves to `no-mistakes` with yolo off, and the registration gap goes to the captain.
-On a `project-branch` project, also resolve the batch branch at intake and pass it explicitly to the brief and the spawn: the branch the project directory is already on when that is not the default branch, otherwise a branch the captain names.
-Never resolve it to the default branch or invent one from the task id.
+On a `project-branch` project, also resolve the batch branch at intake from what the captain names, and pass it explicitly to the brief and the spawn.
+Never resolve it to the default branch, adopt a branch the directory is already on, or invent one from the task id: a project already off its default branch is occupied, and the dispatch will refuse.
+Tell the captain the branch name once work starts, because that is how he knows which branch holds his project.
 Record the resulting mode, `yolo` merge posture, and the one-line reason for any deviation in the backlog item note.
 
 Treat file or subsystem overlap as a risk signal rather than an automatic reason to wait, and dispatch isolated work immediately with no concurrency cap when each change can be independently implemented and validated and the selected delivery path can reconcile ordinary rebases or conflicts.
@@ -338,9 +339,11 @@ The path's worker, automated gates, and captain approval remain authoritative:
 - **direct-PR** has the worker push and open a PR without the no-mistakes pipeline, then waits for the configured merge authority.
 - **local-only** has the worker stop with a clean ready branch, then waits for the configured merge authority before firstmate uses the guarded fast-forward merge path.
 - **project-branch** works in the project's own registered directory on a batch branch the captain owns, rather than in an isolated copy.
-  The worker iterates there, reports ready, and stops; only when the captain says the batch is finished does firstmate relay that word, after which the worker bumps the project's version on that branch, runs the full pipeline, and opens the PR the captain merges and deploys himself.
+  The worker announces the branch, builds and bumps the project's version there, runs the full review pipeline with its push, PR, and CI steps skipped, and stops at ready for a pull request.
+  A green pipeline is never authority to open one: only the captain's relayed word releases the run that pushes and opens the PR he then merges and deploys himself.
   A batch branch belongs to a batch of work rather than to one task, so several tasks may land on it and no branch name is ever derived from a task id.
-  Because the worker shares the captain's own directory, one piece of work at a time per project is the accepted model: `bin/fm-spawn.sh` refuses a second dispatch into an occupied directory, and that refusal goes to the captain rather than being engineered around.
+  A project that is not sitting on its own default branch is occupied - by a worker or by the captain himself - and dispatch stops and reports which branch holds it rather than deciding between those cases.
+  One piece of work at a time per project is the captain's own ruling, so that refusal is the model working; take it to him instead of engineering around it.
 
 Delivery mode and `yolo` are orthogonal.
 `yolo` governs merge authority only: with it off, the captain approves every PR merge and every local-only landing; with it on, firstmate merges green, in-scope work itself.
@@ -379,8 +382,8 @@ The worker reports the PR when CI first becomes green rather than waiting for me
 ### PR ready, landing, and teardown
 
 For PR-based ship tasks, the ready signal depends on mode: `no-mistakes` reports `done: PR <url> checks green` after CI is green, while `direct-PR` reports `done: PR <url>` after opening the PR.
-A `project-branch` task reports ready twice: first `done: ready on branch <branch>` for the captain's own review, which is not a PR and must never be relayed as one, and then `done: PR <url> checks green` after his word has been relayed and the pipeline has opened the PR.
-Take that first signal to the captain as work ready for his eyes on that branch, and wait; only his answer authorizes the second stage.
+A `project-branch` task reports ready twice: first `done: ready for a pull request on branch <branch>` once its review pipeline passes, which is not a PR and must never be relayed as one, and then `done: PR <url> checks green` only after his word has been relayed and the PR run has opened it.
+Take that first signal to the captain as reviewed work ready on that named branch, waiting on his decision to open the pull request, and then wait; a passing pipeline never authorizes that PR itself.
 Run `bin/fm-pr-check.sh <id> <PR url>` - it records `pr=` and the forge's `pr_head=` when available in the task's meta and arms the watcher's merge poll.
 Tell the captain the PR's full URL, always the complete `https://...` link rather than a bare `#number`, a concise outcome summary, and the no-mistakes risk level when applicable.
 A captain instruction to merge is explicit authority; `yolo` is the only standing routine merge authority.

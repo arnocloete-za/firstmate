@@ -284,6 +284,7 @@ family_for_basename() {
     fm-send-inbox.test.sh|fm-spawn-batch.test.sh|\
     fm-spawn-dispatch-profile.test.sh|\
     fm-trace-context-spawn.test.sh|fm-spawn-worktree-settle.test.sh|\
+    fm-project-branch.test.sh|\
     fm-teardown-endpoint-safety.test.sh)
       printf '%s\n' backend-dispatch
       ;;
@@ -579,6 +580,7 @@ tests/fm-pr-check-security.test.sh 160475
 tests/fm-procevent-quota.test.sh 1949
 tests/fm-procevent-when.test.sh 17392
 tests/fm-procevent.test.sh 69715
+tests/fm-project-branch.test.sh 4188
 tests/fm-project-origin.test.sh 137
 tests/fm-public-followup.test.sh 196745
 tests/fm-quota-array-dispatch-live-e2e.test.sh 21

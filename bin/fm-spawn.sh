@@ -35,15 +35,16 @@
 #       this spawn was passed, on a batch branch the captain owns, and allocates,
 #       resets, and returns nothing. bin/fm-project-branch-lib.sh is the single
 #       owner of the refusals that replace the lost isolation, all of which run
-#       before any endpoint or record exists: the directory must not already be
-#       held by another task, the batch branch must be establishable without
-#       moving the captain off a branch he has checked out or carrying his
-#       uncommitted changes across, work never happens on the default branch, and
-#       this worker's own in-directory agent wiring must not overwrite a file the
-#       captain already has. The pane's arrival in that directory and the branch
-#       it is on are both re-proven after the terminal exists, because the captain
-#       works there too. Orca is refused for this model: its worktree is the very
-#       thing this model does without.
+#       before any endpoint or record exists: the project must be sitting on its
+#       own default branch with a clean tree (any other branch means it is already
+#       OCCUPIED - by a worker or by the captain himself - and the dispatch stops
+#       and says so rather than deciding), no task record may already hold the
+#       directory, work never happens on the default branch, nothing is stashed or
+#       reset to make room, and this worker's own in-directory agent wiring must
+#       not overwrite a file the captain already has. The pane's arrival in that
+#       directory and the branch it is on are both re-proven after the terminal
+#       exists, because the captain works there too. Orca is refused for this
+#       model: its worktree is the very thing this model does without.
 #   --branch <batch-branch> is REQUIRED by, and accepted only for, --mode
 #   project-branch. A batch branch belongs to a BATCH of work rather than to one
 #   task - several tasks may land on it over its life - so nothing here or

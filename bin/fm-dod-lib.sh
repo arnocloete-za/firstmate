@@ -11,6 +11,10 @@
 # rendered as the pipeline contract. project-branch REQUIRES the batch branch as
 # the third argument and refuses without it, because that mode's whole contract is
 # a branch the captain already owns rather than one derived from the task id.
+# project-branch's contract ends at "ready for a pull request", not at an open PR:
+# the worker announces the branch before it starts, runs the review pipeline with
+# the push, pr, and ci steps skipped, and stops when it passes. Only a relayed
+# captain instruction releases a later run that opens the PR.
 # The block opens with the fixed machine-readable "Delivery contract: mode=<mode>"
 # line that bin/fm-spawn.sh checks a ship brief against; the project-branch form
 # extends that same line with " branch=<batch-branch>", which the spawn checks
@@ -235,29 +239,44 @@ EOF
       cat <<EOF
 # Definition of done
 Delivery contract: mode=project-branch branch=$branch
-This task ships **project-branch**: you work in the captain's own project directory, on the shared batch branch \`$branch\`, and the PR waits for his word.
+This task ships **project-branch**: you work in the captain's own project directory, on the batch branch \`$branch\`, and you stop before the pull request.
 Several tasks may land on \`$branch\` over time, so it is a batch branch, not this task's branch - never rename it, never derive a branch name from this task's id, and never open a second branch for your own work.
 
-## Stage 1 - build it, then report ready and WAIT
+## Stage 1 - announce the branch, before anything else
+The captain needs to know his project is occupied and by what.
+Append \`working: branched $branch\` to the status file as your FIRST status line, before you change any code.
+Do not skip this: it is how he learns which branch holds his project.
+
+## Stage 2 - build it, bump the version, run the pipeline, then STOP
 Iterate as long as you need: build, run, test, fix, repeat, committing to \`$branch\` as you go.
-The task is complete for this stage only when your work is committed on \`$branch\`.
-Do NOT run /no-mistakes yet. Do NOT push. Do NOT open a PR. Do NOT bump the version yet.
-When you are happy with the work, append \`done: ready on branch $branch - {summary}\` to the status file and stop.
-Then wait: the captain reviews the branch himself and decides when the batch is finished. Firstmate relays his word.
 
-## Stage 2 - only after firstmate relays the captain's word to open the PR
-Do nothing in this stage until that instruction actually arrives.
-
-1. Bump the project's version, on \`$branch\`, so the PR the captain reviews already contains it.
+1. Bump the project's version on \`$branch\`, so the branch the captain reviews already contains it.
    Detect this project's own versioning mechanism from the project itself - the file, tag, or script it actually uses - rather than assuming a scheme.
    If you cannot determine it with confidence, append \`needs-decision: version bump mechanism unclear - {what you found}\` and stop. Never guess and never invent a versioning scheme.
 2. Run \`no-mistakes doctor\`; if it reports the repo is not initialized here, run \`no-mistakes init\`.
    This is deliberately here and not at setup: nothing touches the captain's directory until the work is actually going out.
-3. Run /no-mistakes on \`$branch\` and let the pipeline fix what it finds.
-4. The pipeline pushes \`$branch\` and opens the PR into the default branch.
+3. Run the review pipeline on \`$branch\` and let it fix what it finds, with the push, PR, and CI steps skipped:
 
-After /no-mistakes reports CI green (the CI-ready return point - do not wait for it to keep monitoring in the background until merge), append \`done: PR {url} checks green\` and stop. You are finished.
-The captain merges that PR himself and runs the deploy; you never merge and never commit to the default branch.
+   \`no-mistakes axi run --intent "<this brief's Captain's intent>" --skip push,pr,ci\`
+
+   The \`--skip push,pr,ci\` is REQUIRED and is not yours to drop: it is what keeps a green pipeline from pushing or opening a PR on its own.
+   Everything else about driving the pipeline is unchanged, including the gate rules below.
+4. When the pipeline passes, append \`done: ready for a pull request on branch $branch - {summary}\` to the status file and stop. You are finished.
+
+**Never open the pull request yourself, and never push, even when the pipeline is green.**
+A passing pipeline is not authority to create a PR here.
+The captain wants the reminder that the work is ready, and he decides when the PR happens; firstmate relays that word if it comes.
+Your \`done:\` line must name the branch, because that reminder is the whole point of this stage.
+You also never merge and never touch the default branch.
+
+## Stage 3 - only if firstmate relays the captain's word to open the PR
+Do nothing in this stage unless that instruction actually arrives.
+Run the same pipeline again on \`$branch\` WITHOUT \`--skip\`, so its own push and PR steps run:
+
+\`no-mistakes axi run --intent "<this brief's Captain's intent>"\`
+
+After it reports CI green (the CI-ready return point - do not keep monitoring in the background until merge), append \`done: PR {url} checks green\` and stop.
+The captain merges that PR himself and runs the deploy.
 
 EOF
       fm_dod_no_mistakes_pipeline_guidance

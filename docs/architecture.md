@@ -215,8 +215,12 @@ Ship briefs also tell the crewmate to verify `pwd -P` and `git rev-parse --show-
 
 A project registered `project-branch` deliberately gives up that isolation: its crewmate works in the project's own registered clone, on a batch branch the captain owns, while he may be working in that same directory.
 `bin/fm-project-branch-lib.sh` is the single owner of the refusals that replace what the isolation used to guarantee, and `bin/fm-spawn.sh` runs them all before any endpoint, allocation, or durable record exists, so a refusal leaves nothing behind.
-The directory must not already be held by another task, work never happens on the default branch, the captain is never switched off a branch he has checked out, nothing is stashed or reset to make room, and this task's own agent wiring never overwrites a file already at one of those paths.
-Occupancy is decided by recorded presence rather than liveness: a directory recorded by a task firstmate has not torn down is occupied, which is what makes one-piece-of-work-at-a-time honest instead of advisory.
+Occupancy is decided by the project's own git state rather than by firstmate's bookkeeping: a project that is not sitting on its own default branch is occupied, full stop, and the dispatch reports the branch that holds it.
+That deliberately does not distinguish a crewmate holding the branch from the captain holding it, because the second case is the one bookkeeping would miss, and it is the captain's own rule - his loop is one branch, finish it, merge it, branch again.
+The default branch is resolved per project by `fm_default_branch()` in `bin/fm-tangle-lib.sh`, the same single resolver `bin/fm-dashboard-snapshot.sh` uses, since registered projects sit on `master`, `main`, `develop`, and `test` alike.
+A recorded task still holding the directory refuses too, strictly as additional context that can name the work rather than as a substitute for the git-state gate.
+Uncommitted changes on the default branch are refused as their own condition: `checkout -b` would carry them onto the batch branch and into the PR the captain later reviews, and stashing them aside is what this model may never do.
+Work never happens on the default branch, nothing is reset to make room, and this task's own agent wiring never overwrites a file already at one of those paths.
 
 A batch branch belongs to a batch of work rather than to one task, so nothing derives it from a task id and several tasks may land on one branch over its life.
 Because the model owns nothing, it allocates, resets, detaches, deletes, and refreshes nothing: the base-freshness reset above is skipped, and teardown leaves the directory, the branch, and every commit on it exactly as they are, removing only wiring it can prove is its own.
@@ -296,7 +300,8 @@ The `data/secondmates.md` line contract is owned by the [`secondmate-provisionin
 ## Delivery modes are explicit per task
 
 `no-mistakes` tasks run the full validation pipeline, `direct-PR` tasks open PRs without that pipeline, and `local-only` tasks stay local until firstmate performs an approved fast-forward merge.
-`project-branch` tasks run that same pipeline but in two captain-gated stages: the worker iterates in the project's own directory, reports ready on the batch branch, and stops, and only a relayed captain instruction releases the version bump, the pipeline, and the PR.
+`project-branch` tasks run that same pipeline but end at a captain gate rather than at an open PR: the worker announces its branch, builds and bumps the version in the project's own directory, runs the pipeline with its `push,pr,ci` steps skipped, and stops at ready for a pull request, so a green pipeline can neither push nor open one.
+Only a relayed captain instruction releases a second, unskipped run that pushes and opens the PR, because he wants the reminder that work is ready and keeps that decision himself.
 It is the one mode whose delivery contract also selects a workspace model, which is why `--mode project-branch` requires `--branch` on both `bin/fm-brief.sh` and `bin/fm-spawn.sh` and the brief's recorded branch is checked against the dispatched one exactly as its mode is.
 `bin/fm-promote.sh` refuses it, because promotion keeps a scout's own scratch copy and that copy is not the project's directory.
 Each task's mode and `yolo` merge posture are firstmate's decision at intake.
