@@ -34,23 +34,27 @@ generate() {  # <extra-args...>
     || fail "generate failed: $(cat "$TMP_ROOT/err.txt")"
 }
 
-# card <n>: print the nth project card's markup (1-based, page order).
-card() {  # <n>
-  awk -v want="$1" '
+# card_in <page> <n>: print the nth project card's markup (1-based, page order).
+card_in() {  # <page> <n>
+  awk -v want="$2" '
     /^<div class="card[ "]/ { seen++ }
     seen == want { print }
     seen > want { exit }
-  ' "$PAGE"
+  ' "$1"
 }
 
-# row <task-id>: print the live row carrying that task id.
-row() {  # <id>
-  awk -v id="$1" '
+# row_in <page> <task-id>: print the live row carrying that task id.
+row_in() {  # <page> <id>
+  awk -v id="$2" '
     /^<div class="row[ "]/ { block = $0; next }
     block != "" { block = block "\n" $0 }
     /^<\/div>$/ { if (block ~ ">" id "<") print block; block = "" }
-  ' "$PAGE"
+  ' "$1"
 }
+
+# The shared fixture reads the one page every case but the board cases use.
+card() { card_in "$PAGE" "$1"; }  # <n>
+row() { row_in "$PAGE" "$1"; }    # <id>
 
 # --- fixtures --------------------------------------------------------------
 # make_repo <path> <default-branch>: a real git checkout with five commits.
@@ -262,6 +266,178 @@ grep -q 'No projects registered' "$PAGE" || fail "an absent registry should say 
 grep -q 'No work running' "$PAGE" || fail "an empty fleet should say so"
 mv "$TMP_ROOT/projects.md.bak" "$FM_HOME/data/projects.md"
 pass "an absent registry and an empty fleet each state themselves rather than failing"
+
+# --- boards: which projects, and whose work, each one shows ---------------
+# The captain keeps his work and his own personal projects on separate boards.
+# What matters here is that the split is REGISTRY state and that its failure
+# direction is safe: a project he has not marked, or has marked wrong, must land
+# on the work board rather than off both, because a project he cannot see
+# anywhere is worse than one on the wrong board.
+#
+# A separate home so these cases cannot disturb the shared fixture above.
+BOARD_HOME="$TMP_ROOT/boards/home"
+BOARD_REPOS="$TMP_ROOT/boards/repos"
+mkdir -p "$BOARD_HOME/data"
+for name in w-one w-two w-bad p-one p-two; do
+  make_repo "$BOARD_REPOS/$name" main
+done
+
+cat > "$BOARD_HOME/data/projects.md" <<REG
+# Projects
+
+- w-one - no annotation at all (added 2026-01-01); clone kept in place at $BOARD_REPOS/w-one
+- p-one [local-only +personal] - clone kept in place at $BOARD_REPOS/p-one (added 2026-01-01)
+- w-two [no-mistakes] - clone kept in place at $BOARD_REPOS/w-two (added 2026-01-01)
+- p-two [no-mistakes-prod-only +personal] - clone kept in place at $BOARD_REPOS/p-two (added 2026-01-01)
+- w-bad [no-mistakes +persnoal] - a misspelled marker (added 2026-01-01); clone kept in place at $BOARD_REPOS/w-bad
+REG
+
+# One task per board, plus one whose project is registered on no board at all.
+BOARD_FLEET="$TMP_ROOT/fleet-boards.json"
+jq -n --argjson tasks "$(jq -n \
+  --argjson work "$(task_json t-work w-one working 'harness busy' '{}')" \
+  --argjson personal "$(task_json t-personal p-one working 'harness busy' '{}')" \
+  --argjson ghost "$(task_json t-ghost not-registered working 'harness busy' '{}')" \
+  '[$work, $personal, $ghost]')" \
+  '{schema: "fm-fleet-snapshot.v1", generated: "2026-01-01T00:00:00Z", tasks: $tasks}' \
+  > "$BOARD_FLEET"
+
+WORK_PAGE="$TMP_ROOT/boards/work.html"
+PERSONAL_PAGE="$TMP_ROOT/boards/personal.html"
+board() {  # <group> <page> <extra-args...>
+  local group=$1 page=$2
+  shift 2
+  FM_HOME="$BOARD_HOME" "$DASH" --group "$group" --out "$page" \
+    --fleet-json "$BOARD_FLEET" "$@" > "$TMP_ROOT/board-out.txt" 2> "$TMP_ROOT/board-err.txt" \
+    || fail "generating the $group board failed: $(cat "$TMP_ROOT/board-err.txt")"
+}
+board work "$WORK_PAGE"
+board personal "$PERSONAL_PAGE"
+
+# The captain asked for the marked projects to be gone from the work board, so
+# absence from the whole page is the assertion - not merely absence of a card.
+for marked in p-one p-two; do
+  grep -qF ">$marked<" "$WORK_PAGE" \
+    && fail "$marked is marked personal and must not appear on the work board"
+done
+for unmarked in w-one w-two w-bad; do
+  grep -qF ">$unmarked<" "$PERSONAL_PAGE" \
+    && fail "$unmarked is not marked personal and must not appear on the personal board"
+done
+card_in "$PERSONAL_PAGE" 1 | grep -q '>p-one<' \
+  || fail "the personal board should show the first marked project: $(card_in "$PERSONAL_PAGE" 1)"
+card_in "$PERSONAL_PAGE" 2 | grep -q '>p-two<' \
+  || fail "the personal board should show the second marked project: $(card_in "$PERSONAL_PAGE" 2)"
+card_in "$PERSONAL_PAGE" 3 | grep -q 'class="card' \
+  && fail "the personal board must show ONLY the marked projects: $(card_in "$PERSONAL_PAGE" 3)"
+pass "a registry marker moves a project between boards, and each board shows only its own projects"
+
+# The safe failure direction: unmarked, unannotated, and misspelled all mean the
+# work board, so nothing the captain has not deliberately moved can vanish.
+card_in "$WORK_PAGE" 1 | grep -q '>w-one<' \
+  || fail "a project with no annotation at all belongs on the work board: $(card_in "$WORK_PAGE" 1)"
+card_in "$WORK_PAGE" 3 | grep -q '>w-bad<' \
+  || fail "a misspelled marker must leave the project on the work board, not on none: $(card_in "$WORK_PAGE" 3)"
+grep -qF '>w-bad<' "$PERSONAL_PAGE" \
+  && fail "a misspelled marker must not put a project on the personal board"
+pass "an unmarked, unannotated, or misspelled project lands on the work board, so nothing silently vanishes"
+
+# Numbering is per board and in registry order within it, so a project's number
+# is its position among the projects the captain sees beside it.
+card_in "$WORK_PAGE" 1 | grep -q 'class="num">01<' \
+  || fail "the work board should number its own first project 01: $(card_in "$WORK_PAGE" 1)"
+card_in "$WORK_PAGE" 2 | grep -q '>w-two<' \
+  || fail "the work board should skip the marked project and number registry order within itself: $(card_in "$WORK_PAGE" 2)"
+card_in "$PERSONAL_PAGE" 1 | grep -q 'class="num">01<' \
+  || fail "each board numbers from 01 independently: $(card_in "$PERSONAL_PAGE" 1)"
+card_in "$PERSONAL_PAGE" 2 | grep -q 'class="num">02<' \
+  || fail "the personal board should number its second project 02: $(card_in "$PERSONAL_PAGE" 2)"
+pass "each board numbers its own projects from 01 in registry order within that board"
+
+# The same guarantee the whole-fleet board has: a number is a spoken handle, so
+# it must not move when a project's status changes.
+printf 'churn\n' >> "$BOARD_REPOS/w-two/file.txt"
+board work "$WORK_PAGE"
+card_in "$WORK_PAGE" 2 | grep -q '>w-two<' \
+  || fail "a project's number moved on its board when its status changed: $(card_in "$WORK_PAGE" 2)"
+card_in "$WORK_PAGE" 2 | grep -q 'uncommitted' \
+  || fail "w-two should now read uncommitted: $(card_in "$WORK_PAGE" 2)"
+git -C "$BOARD_REPOS/w-two" checkout -q -- file.txt
+board work "$WORK_PAGE"
+pass "a per-board number holds still when the project's status changes"
+
+# A task is on the board its project is on, and one whose project is registered
+# nowhere stays on the work board for the same reason an unmarked project does.
+row_in "$WORK_PAGE" t-work | grep -q 'class="row' \
+  || fail "a task on a work project belongs on the work board"
+row_in "$PERSONAL_PAGE" t-personal | grep -q 'class="row' \
+  || fail "a task on a personal project belongs on the personal board"
+row_in "$PERSONAL_PAGE" t-work | grep -q 'class="row' \
+  && fail "a task on a work project must not appear on the personal board"
+row_in "$WORK_PAGE" t-personal | grep -q 'class="row' \
+  && fail "a task on a personal project must not appear on the work board"
+row_in "$WORK_PAGE" t-ghost | grep -q 'class="row' \
+  || fail "a task whose project is not registered must stay on the work board, not vanish"
+row_in "$PERSONAL_PAGE" t-ghost | grep -q 'class="row' \
+  && fail "an unregistered task belongs on one board only"
+grep -q '<b>1</b> running' "$PERSONAL_PAGE" \
+  || fail "the personal board should count only its own running work: $(grep -o '<b>[0-9]*</b> running' "$PERSONAL_PAGE")"
+pass "live work follows its project's board, and work on an unregistered project stays on the work board"
+
+# One generator, one template. The two boards are the same page with different
+# projects on it, so their styling and script must be byte-identical - a fork
+# would let them drift the first time only one was changed.
+# styling: everything between the style tags, which spans many lines.
+styling() {  # <page>
+  awk '/<style>/ { on = 1 } on { print } /<\/style>/ { if (on) exit }' "$1"
+}
+title_of() {  # <page>
+  sed -n 's/.*<title>\(.*\)<\/title>.*/\1/p' "$1"
+}
+[ "$(styling "$WORK_PAGE" | wc -l)" -gt 20 ] \
+  || fail "the work board should carry its style block: $(styling "$WORK_PAGE" | head -3)"
+[ "$(styling "$WORK_PAGE")" = "$(styling "$PERSONAL_PAGE")" ] \
+  || fail "the two boards must render from one template - their styling has diverged"
+[ "$(title_of "$WORK_PAGE")" = "Fleet dashboard" ] \
+  || fail "the work board keeps its own name: $(title_of "$WORK_PAGE")"
+[ "$(title_of "$PERSONAL_PAGE")" = "Personal dashboard" ] \
+  || fail "the personal board should name itself so the captain knows which board he is on"
+grep -qF 're-run /dashboard-personal to refresh' "$PERSONAL_PAGE" \
+  || fail "each board should name the command that re-runs IT"
+grep -qF 're-run /dashboard to refresh' "$WORK_PAGE" \
+  || fail "the work board should still name /dashboard"
+pass "both boards render from one template and differ only in their projects and their own name"
+
+# Each board has its own default location, so generating one can never overwrite
+# the other, and a watch on one cannot publish over the other's page.
+for group in work personal; do
+  FM_HOME="$BOARD_HOME" "$DASH" --group "$group" --fleet-json "$BOARD_FLEET" \
+    > "$TMP_ROOT/board-default-$group.txt" 2>&1 \
+    || fail "the $group board should generate at its own default path: $(cat "$TMP_ROOT/board-default-$group.txt")"
+done
+WORK_DEFAULT=$(sed -n 's/^dashboard: //p' "$TMP_ROOT/board-default-work.txt")
+PERSONAL_DEFAULT=$(sed -n 's/^dashboard: //p' "$TMP_ROOT/board-default-personal.txt")
+[ -n "$WORK_DEFAULT" ] && [ -n "$PERSONAL_DEFAULT" ] \
+  || fail "each board should print the page it wrote"
+[ "$WORK_DEFAULT" != "$PERSONAL_DEFAULT" ] \
+  || fail "the boards share a default page path, so one would overwrite the other: $WORK_DEFAULT"
+grep -qF '>p-one<' "$PERSONAL_DEFAULT" \
+  || fail "the personal board's default page should hold the personal projects"
+grep -qF '>p-one<' "$WORK_DEFAULT" \
+  && fail "the work board's default page must not hold a personal project"
+pass "each board writes its own default page, so generating one never overwrites the other"
+
+# A board name that is not a board is refused rather than quietly rendered as
+# some other board's projects under this one's name.
+if FM_HOME="$BOARD_HOME" "$DASH" --group persnoal --out "$TMP_ROOT/boards/typo.html" \
+    --fleet-json "$BOARD_FLEET" > "$TMP_ROOT/board-typo.txt" 2>&1; then
+  fail "an unknown board name should be refused: $(cat "$TMP_ROOT/board-typo.txt")"
+fi
+assert_contains "$(cat "$TMP_ROOT/board-typo.txt")" "--group must be one of" \
+  "an unknown board name should say which boards exist"
+[ -f "$TMP_ROOT/boards/typo.html" ] \
+  && fail "a refused board name must not leave a page behind"
+pass "an unknown board name is refused by name rather than rendered as some other board"
 
 # --- watch mode -----------------------------------------------------------
 # The captain starts one command and the page stops going stale on him. What
