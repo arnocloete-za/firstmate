@@ -269,6 +269,8 @@ Set `FM_SECONDMATE_CHARTER` to seed from inline charter text when no filled char
 The seeded home's `data/charter.md` owns the standard secondmate lifecycle and escalation contract; the route file points to it through the existing `home:` field instead of adding another pointer.
 Each seed writes an `.fm-secondmate-home` identity marker at the home root, alongside a durable `.fm-secondmate-parent` record of the home's route to its parent (see "Provision a route" in [`docs/remote-secondmates.md`](remote-secondmates.md)).
 The tracked root `.gitignore` ignores both markers, so validation can read them without making a freshly seeded home appear dirty to porcelain-based safety checks.
+`dirty_status` in [`bin/fm-ff-lib.sh`](../bin/fm-ff-lib.sh) additionally excludes exactly two Firstmate-generated untracked paths from its dirtiness verdict: the `.fm-secondmate-home` marker, for the callers that opt in, and the `/dashboard` output directory `.dashboard/`, always.
+Both are already gitignored, so the exclusion only matters for a home that generated the path *before* fast-forwarding to the commit that ignores it; without it, the sync guard would read Firstmate's own output as operator work and refuse the very self-update that lands the ignore rule.
 This does not relax protection for any other untracked file.
 An existing linked-worktree home that predates this rule advances through its marker-only state during its next bootstrap or spawn local sync, after which Git ignores the marker normally.
 A local standalone-clone home cannot receive a primary-local commit through that no-fetch sync, so it receives the rule through `/updatefirstmate`'s origin refresh instead.

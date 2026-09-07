@@ -8,6 +8,9 @@
 #     fast-forwards the same way.
 #   - FAST-FORWARD ONLY: a dirty, diverged, offline, or wrong-branch target is
 #     skipped and reported, never forced or stashed, so unlanded work survives.
+#   - Firstmate's own generated dashboard output does not count as operator work,
+#     so it can never strand a home that generated it before the commit that
+#     gitignores it - while real uncommitted work next to it still skips.
 #   - The update is a single-parent fast-forward (never a merge commit) and a
 #     fast-forward of one worktree never disturbs another worktree's checkout
 #     or the shared default branch.
@@ -291,9 +294,50 @@ test_unsafe_secondmate_home_skipped_before_git_update() {
   pass "T11 unsafe secondmate home is not fast-forwarded"
 }
 
+# --- T12: generated dashboard output never blocks a home's self-update ------
+# A home that ran /dashboard BEFORE fast-forwarding to the commit that ignores
+# .dashboard/ still reports it as untracked. Reading Firstmate's own generated
+# output as operator work would make this guard refuse the very update that
+# lands the ignore rule, stranding that home for good. The exclusion is exactly
+# that narrow: real uncommitted work alongside the board still skips the home.
+test_generated_dashboard_output_does_not_block_update() {
+  local w out
+  w=$(new_world t12)
+  add_sm "$w" sm1
+  bump_origin "$w" instr
+  mkdir -p "$w/main/.dashboard" "$w/sm1/.dashboard"
+  printf '<html>board</html>\n' > "$w/main/.dashboard/index.html"
+  printf '<html>board</html>\n' > "$w/sm1/.dashboard/index.html"
+
+  out=$(run_update "$w")
+
+  assert_contains "$out" "firstmate: updated " "generated board did not block the firstmate update"
+  assert_contains "$out" "secondmate sm1: updated " "generated board did not block the secondmate update"
+  [ "$(git -C "$w/main" rev-parse HEAD)" = "$(git -C "$w/main" rev-parse origin/main)" ] \
+    || fail "firstmate HEAD did not advance past its generated dashboard output"
+  grep -q 'board' "$w/main/.dashboard/index.html" \
+    || fail "the fast-forward disturbed the generated dashboard output"
+
+  # Same generated output, but with genuine uncommitted work: still skipped.
+  w=$(new_world t12b)
+  add_sm "$w" sm1
+  bump_origin "$w" instr
+  mkdir -p "$w/sm1/.dashboard"
+  printf '<html>board</html>\n' > "$w/sm1/.dashboard/index.html"
+  printf 'uncommitted local edit\n' >> "$w/sm1/AGENTS.md"
+
+  out=$(run_update "$w")
+
+  assert_contains "$out" "secondmate sm1: skipped: dirty working tree" \
+    "real uncommitted work is still dirty next to the generated board"
+  grep -q 'uncommitted local edit' "$w/sm1/AGENTS.md" || fail "dirty edit was discarded"
+  pass "T12 generated dashboard output does not block self-update, real work still does"
+}
+
 test_updates_main_and_secondmate
 test_reread_gate_is_instruction_only
 test_dirty_secondmate_skipped
+test_generated_dashboard_output_does_not_block_update
 test_diverged_secondmate_skipped
 test_idempotent_already_current
 test_registry_backstop_dedup_and_self_exclusion

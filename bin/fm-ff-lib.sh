@@ -24,15 +24,17 @@
 # A tracked-files fast-forward never touches the gitignored operational dirs
 # (data/, state/, config/, projects/, .no-mistakes/), so it cannot disturb a
 # secondmate's backlog, projects, or in-flight work.
-# The seeded .fm-secondmate-home identity marker is gitignored too; the local
-# sync tolerates only that marker during the one-time upgrade of pre-ignore
-# linked-worktree homes.
+# Firstmate's own generated paths inside a home - the seeded
+# .fm-secondmate-home identity marker and the /dashboard output directory - are
+# gitignored too, and the guard tolerates only those while a home still predates
+# the commit that ignores them (see dirty_status).
 # Locally leased homes start at a detached HEAD on the default branch, so their
 # fast-forward advances HEAD only and never moves the shared default branch or
 # any other worktree's checkout. A standalone remote home may instead advance
 # its checked-out default branch under the same guard.
 
 SUB_HOME_MARKER="${SUB_HOME_MARKER:-.fm-secondmate-home}"
+DASHBOARD_OUTPUT_MARKER=".dashboard/"
 # shellcheck source=bin/fm-secondmate-registry-lib.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-secondmate-registry-lib.sh"
 
@@ -246,13 +248,23 @@ remote_sync_failure_reason() { # <exit-status> <output>
   first_line "$2"
 }
 
+# First porcelain line that counts as the target's own uncommitted work, or
+# empty when it has none.
+#
+# Firstmate's generated dashboard output is always excluded. The tracked
+# .gitignore hides it, but a home that generated it BEFORE fast-forwarding to
+# the commit carrying that rule still reports it as untracked - and treating
+# that as operator work would make this guard refuse the very self-update that
+# lands the rule, stranding the home permanently. The seeded secondmate-home
+# marker is excluded on the same grounds, but only for callers that opt in.
+# Neither exclusion relaxes anything for any other untracked path: porcelain
+# never emits an empty line, so an opted-out marker matches nothing.
 dirty_status() {
-  local dir=$1 ignore_seed_marker=${2:-no}
-  if [ "$ignore_seed_marker" = yes ]; then
-    git -C "$dir" status --porcelain 2>/dev/null | awk -v marker="?? $SUB_HOME_MARKER" '$0 != marker { print; exit }'
-  else
-    git -C "$dir" status --porcelain 2>/dev/null | head -1
-  fi
+  local dir=$1 ignore_seed_marker=${2:-no} seed=""
+  [ "$ignore_seed_marker" != yes ] || seed="?? $SUB_HOME_MARKER"
+  git -C "$dir" status --porcelain 2>/dev/null |
+    awk -v seed="$seed" -v generated="?? $DASHBOARD_OUTPUT_MARKER" \
+      '$0 != seed && $0 != generated { print; exit }'
 }
 
 # List this home's LIVE secondmate direct reports from state/<id>.meta records.

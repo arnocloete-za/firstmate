@@ -5,7 +5,8 @@
 # Covers schema validation refusal, template-injection round-trip (the built
 # page carries a readable fm-dashboard-snapshot.v1 payload), HTTP
 # reachability of the served content, idempotent reuse of an already-running
-# server across a rebuild, and `stop`.
+# server across a rebuild, `stop`, and that building into a home that is itself
+# a checkout leaves no uncommitted work behind.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -110,5 +111,34 @@ pass "stop terminates the server and the state file is cleared"
 STOP_AGAIN=$("$SERVE" stop) || fail "stop should be idempotent when nothing is running"
 echo "$STOP_AGAIN" | grep -q "not running" || fail "stop with no server should report not running: $STOP_AGAIN"
 pass "stop is idempotent when no server is running"
+
+# --- generated output never shows up as uncommitted work --------------------
+# A Firstmate home is itself a checkout of this repo, and every sync guard
+# decides whether it holds operator work by reading `git status --porcelain`
+# (bin/fm-ff-lib.sh dirty_status). So the real consumer of the tracked root
+# .gitignore is git itself: seed that exact file into a real repo, build the
+# board into it, and assert porcelain stays silent. Before the ignore rule this
+# reported `?? .dashboard/`.
+GIT_HOME="$TMP_ROOT/git-home"
+mkdir -p "$GIT_HOME/state"
+git init -q "$GIT_HOME" 2>/dev/null
+cp "$ROOT/.gitignore" "$GIT_HOME/.gitignore"
+git -C "$GIT_HOME" add .gitignore
+git -C "$GIT_HOME" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' \
+  commit -qm "tracked root gitignore"
+[ -z "$(git -C "$GIT_HOME" status --porcelain)" ] \
+  || fail "fixture home was not clean before the dashboard build"
+
+git_home_stop() { FM_HOME="$GIT_HOME" "$SERVE" stop >/dev/null 2>&1 || true; }
+cleanup() { git_home_stop; "$SERVE" stop >/dev/null 2>&1 || true; fm_test_cleanup; }
+
+OUT3=$(FM_HOME="$GIT_HOME" "$SERVE" build "$DATA") || fail "build failed in a git home: $OUT3"
+[ -f "$GIT_HOME/.dashboard/index.html" ] \
+  || fail "build did not write the board inside the git home"
+PORCELAIN=$(git -C "$GIT_HOME" status --porcelain)
+[ -z "$PORCELAIN" ] \
+  || fail "generated dashboard output left the home dirty: $PORCELAIN"
+git_home_stop
+pass "building the board inside a checkout leaves git status --porcelain empty"
 
 echo "ALL TESTS PASSED"
