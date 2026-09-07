@@ -263,6 +263,249 @@ grep -q 'No work running' "$PAGE" || fail "an empty fleet should say so"
 mv "$TMP_ROOT/projects.md.bak" "$FM_HOME/data/projects.md"
 pass "an absent registry and an empty fleet each state themselves rather than failing"
 
+# --- watch mode -----------------------------------------------------------
+# The captain starts one command and the page stops going stale on him. What
+# matters here is what that command PUBLISHES, because the page has no other
+# way to learn anything: the board file only when the board changed, and one
+# sidecar every pass carrying the evidence that the watch is still reading.
+# Whether a browser then acts on those files is proved against a real browser
+# and recorded in docs/verification/dashboard-watch.md.
+STAMP="$PAGE.watch.js"
+
+# Refusals first: they cost nothing and a cadence silently ignored is worse
+# than one refused.
+"$DASH" --out "$PAGE" --interval 10 > "$TMP_ROOT/out.txt" 2> "$TMP_ROOT/err.txt" \
+  && fail "--interval without --watch should be refused, not ignored"
+grep -q 'interval means nothing without --watch' "$TMP_ROOT/err.txt" \
+  || fail "the refusal should say why: $(cat "$TMP_ROOT/err.txt")"
+"$DASH" --out "$PAGE" --watch --interval 1 > /dev/null 2> "$TMP_ROOT/err.txt" \
+  && fail "an interval under the floor should be refused"
+"$DASH" --out "$PAGE" --watch --interval soon > /dev/null 2> "$TMP_ROOT/err.txt" \
+  && fail "a non-numeric interval should be refused"
+pass "a cadence that means nothing, or would hammer the fleet, is refused rather than quietly accepted"
+
+# A page generated WITHOUT --watch is unchanged: no pickup, and nothing that
+# would go looking for a sidecar.
+generate --fleet-json "$EMPTY_FLEET"
+grep -q 'fmDashboardStamp' "$PAGE" \
+  && fail "a page written without --watch must carry no watch pickup at all"
+pass "the plain command still writes a page with nothing watching it"
+
+# Fixture repos of their own, committed at a fixed old date, so a commit's
+# displayed age cannot tick over mid-test and make an unchanged fleet look
+# changed.
+WREPOS="$TMP_ROOT/watch-repos"
+make_repo "$WREPOS/echo" main
+GIT_AUTHOR_DATE='2020-01-01T00:00:00Z' GIT_COMMITTER_DATE='2020-01-01T00:00:00Z' \
+  git -C "$WREPOS/echo" commit -q --amend --no-edit --date='2020-01-01T00:00:00Z'
+cat > "$FM_HOME/data/projects.md" <<REG
+# Projects
+
+- echo [no-mistakes] - clone kept in place at $WREPOS/echo (added 2026-01-01)
+REG
+
+# wait_until <seconds> <command...>: poll a condition so the test is as fast as
+# the watch allows and still survives a loaded machine.
+wait_until() {  # <seconds> <command...>
+  local limit=$1 waited=0
+  shift
+  while [ "$waited" -lt "$limit" ]; do
+    "$@" && return 0
+    sleep 1
+    waited=$((waited + 1))
+  done
+  return 1
+}
+stamp_field() {  # <name>
+  sed -n 's/.*"'"$1"'":"\([^"]*\)".*/\1/p' "$STAMP"
+}
+page_content_id() {
+  sed -n 's/.*name="fm-dashboard-content" content="\([^"]*\)".*/\1/p' "$PAGE"
+}
+file_id() {  # <path>: inode, which a publish-by-rename always changes
+  stat -c %i "$1" 2>/dev/null || stat -f %i "$1"
+}
+read_advanced() { [ -f "$STAMP" ] && [ "$(stamp_field readAt)" != "$1" ]; }
+
+rm -f "$PAGE" "$STAMP"
+WATCH_INTERVAL=5
+"$DASH" --out "$PAGE" --watch --interval "$WATCH_INTERVAL" --fleet-json "$EMPTY_FLEET" \
+  > "$TMP_ROOT/watch.log" 2>&1 &
+WATCH_PID=$!
+watch_stop() { kill -0 "$WATCH_PID" 2>/dev/null && kill -INT "$WATCH_PID" 2>/dev/null; }
+trap 'watch_stop; fm_test_cleanup' EXIT
+
+announced() { grep -q "^watching: " "$TMP_ROOT/watch.log"; }
+wait_until 20 announced \
+  || fail "the watch should say it is running and how to stop it: $(cat "$TMP_ROOT/watch.log")"
+grep -q 'Ctrl-C' "$TMP_ROOT/watch.log" \
+  || fail "stopping must be as obvious as starting: $(cat "$TMP_ROOT/watch.log")"
+# The link is handed over only once there is a page behind it.
+LINK=$(sed -n 's/^open: file:\/\///p' "$TMP_ROOT/watch.log")
+[ -f "$LINK" ] || fail "the watch offered a link to a page that is not there: $LINK"
+[ -f "$STAMP" ] || fail "a watch should publish its sidecar alongside the page"
+grep -q 'fmDashboardStamp' "$PAGE" || fail "a watched page should carry the pickup that reads the sidecar"
+[ "$(stamp_field content)" = "$(page_content_id)" ] \
+  || fail "the sidecar must report the very page it was published beside"
+pass "one command publishes the board, the sidecar beside it, and says how to stop"
+
+# The sidecar's claim expires, so nothing can keep saying "watching" on the
+# strength of a watch that used to be running.
+DUE=$(stamp_field dueBy)
+[ -n "$DUE" ] || fail "the sidecar must say when the next one is owed: $(cat "$STAMP")"
+[ "$DUE" \> "$(stamp_field readAt)" ] \
+  || fail "the next stamp must be owed after the read it follows: $(cat "$STAMP")"
+grep -q 'dueBy' "$PAGE" || fail "the page must start with that expiry too, not with an open-ended claim"
+pass "the watch publishes an expiry on its own liveness rather than an open-ended claim"
+
+# An unchanged fleet: the sidecar keeps proving the watch is reading, and the
+# page the captain is looking at is left exactly where it is.
+PAGE_ID=$(file_id "$PAGE")
+FIRST_READ=$(stamp_field readAt)
+wait_until $((WATCH_INTERVAL * 4)) read_advanced "$FIRST_READ" \
+  || fail "the sidecar must keep advancing, or the page cannot tell a live watch from a dead one"
+[ "$(file_id "$PAGE")" = "$PAGE_ID" ] \
+  || fail "an unchanged board must not be rewritten under the captain's scroll position"
+pass "an unchanged fleet keeps proving the watch is alive without rewriting the page"
+
+# A real change: the page is republished and the sidecar points at the new one.
+printf 'more\n' >> "$WREPOS/echo/file.txt"
+git -C "$WREPOS/echo" add file.txt
+git -C "$WREPOS/echo" commit -q -m "the newest thing"
+page_republished() { [ "$(file_id "$PAGE")" != "$PAGE_ID" ]; }
+wait_until $((WATCH_INTERVAL * 4)) page_republished \
+  || fail "a changed board must be republished: $(cat "$TMP_ROOT/watch.log")"
+grep -q 'the newest thing' "$PAGE" || fail "the republished page should carry the change"
+wait_until 10 test "$(stamp_field content)" = "$(page_content_id)" \
+  || fail "the sidecar must catch up to the page it was published beside"
+grep -q '^updated: ' "$TMP_ROOT/watch.log" \
+  || fail "the captain should see that something changed: $(cat "$TMP_ROOT/watch.log")"
+pass "a real change republishes the page and the sidecar names it"
+
+# The watch page is still display only.
+for forbidden in '<form' 'method="post"' 'fetch(' 'XMLHttpRequest' 'http://127.0.0.1' 'http://localhost'; do
+  grep -qiF "$forbidden" "$PAGE" \
+    && fail "a watched page must not carry '$forbidden' - it is still display only"
+done
+grep -qiE '>[^<]*(run|start|stop|steer|merge|refresh)[^<]*</button>' "$PAGE" \
+  && fail "a watched page must offer no button that acts on anything"
+pass "a watched page still has no form, no request back to any server, and no button that acts"
+
+# Ctrl-C: stops cleanly, leaves no temporary file behind, and tells the page it
+# is over instead of letting it go on claiming to be watched.
+kill -INT "$WATCH_PID"
+STOP_CODE=0
+wait "$WATCH_PID" || STOP_CODE=$?
+trap fm_test_cleanup EXIT
+expect_code 0 "$STOP_CODE" "Ctrl-C should stop the watch cleanly"
+grep -q '^stopped: ' "$TMP_ROOT/watch.log" \
+  || fail "a stopped watch should say so: $(cat "$TMP_ROOT/watch.log")"
+LEFTOVERS=$(find "$TMP_ROOT" -maxdepth 1 -name '*.tmp' -print)
+[ -z "$LEFTOVERS" ] || fail "a stopped watch left staged files behind: $LEFTOVERS"
+grep -q '"watching":false' "$STAMP" \
+  || fail "the last word to the page must be that the watch is over: $(cat "$STAMP")"
+[ "$(stamp_field content)" = "$(page_content_id)" ] \
+  || fail "stopping must not invent a board that was never published: $(cat "$STAMP")"
+pass "Ctrl-C stops the watch, leaves nothing staged, and tells the page the watch is over"
+
+# Stopping mid-read is the ordinary case on a real fleet, where one pass is
+# seconds of git and terminal reads. It must not wait the read out, must not
+# leave the read behind, and must not publish a board assembled from reads that
+# were killed - a project reported as missing because the captain pressed Ctrl-C
+# would be worse than any stale page.
+SLOWBIN=$(fm_fakebin "$TMP_ROOT/slow")
+REAL_GIT=$(command -v git)
+cat > "$SLOWBIN/git" <<SLOWGIT
+#!/usr/bin/env bash
+printf '%s\n' "\$\$" >> "$TMP_ROOT/slow-git.pids"
+exec sleep 120
+SLOWGIT
+chmod +x "$SLOWBIN/git"
+GOOD_PAGE_ID=$(file_id "$PAGE")
+PATH="$SLOWBIN:$PATH" "$DASH" --out "$PAGE" --watch --interval "$WATCH_INTERVAL" \
+  --fleet-json "$EMPTY_FLEET" > "$TMP_ROOT/slow.log" 2>&1 &
+SLOW_PID=$!
+trap 'kill -0 "$SLOW_PID" 2>/dev/null && kill -INT "$SLOW_PID" 2>/dev/null; fm_test_cleanup' EXIT
+wait_until 20 test -s "$TMP_ROOT/slow-git.pids" \
+  || fail "the watch should have started reading: $(cat "$TMP_ROOT/slow.log")"
+
+STOP_STARTED=$(date +%s)
+kill -INT "$SLOW_PID"
+SLOW_CODE=0
+wait "$SLOW_PID" || SLOW_CODE=$?
+STOP_TOOK=$(( $(date +%s) - STOP_STARTED ))
+trap fm_test_cleanup EXIT
+expect_code 0 "$SLOW_CODE" "a watch stopped mid-read should still stop cleanly"
+[ "$STOP_TOOK" -lt 30 ] \
+  || fail "stopping waited out the read it should have killed (${STOP_TOOK}s)"
+while read -r pid; do
+  [ -n "$pid" ] || continue
+  kill -0 "$pid" 2>/dev/null && fail "a read outlived the watch that started it: pid $pid"
+done < "$TMP_ROOT/slow-git.pids"
+[ "$(file_id "$PAGE")" = "$GOOD_PAGE_ID" ] \
+  || fail "a watch stopped mid-read must publish nothing, not a board built from killed reads"
+grep -q 'the newest thing' "$PAGE" \
+  || fail "the last good board should still be what the captain has"
+pass "a watch stopped mid-read kills its reads, publishes nothing, and leaves the last good board standing"
+
+# The other half of the same rule: a stopping watch starts no further reads.
+# Killing what is in flight is not enough on its own, because the code that was
+# waiting on a killed read goes on to ask its next question - and that one would
+# be a process nothing is left to stop.
+make_repo "$WREPOS/detached" main
+git -C "$WREPOS/detached" checkout -q --detach
+cat > "$FM_HOME/data/projects.md" <<REG
+# Projects
+
+- detached [no-mistakes] - clone kept in place at $WREPOS/detached (added 2026-01-01)
+REG
+LATEBIN=$(fm_fakebin "$TMP_ROOT/late")
+cat > "$LATEBIN/git" <<LATEGIT
+#!/usr/bin/env bash
+# Hang on the history read, so the stop lands with one read in flight, and
+# record the read that only ever happens AFTER that one comes back.
+seen_revparse=0 seen_short=0
+for arg in "\$@"; do
+  [ "\$arg" = rev-parse ] && seen_revparse=1
+  [ "\$arg" = --short ] && seen_short=1
+  if [ "\$arg" = log ]; then
+    printf '%s\n' "\$\$" >> "$TMP_ROOT/late-hung.pids"
+    exec sleep 120
+  fi
+done
+if [ "\$seen_revparse" = 1 ] && [ "\$seen_short" = 1 ]; then
+  printf 'started\n' >> "$TMP_ROOT/late-reads"
+fi
+exec $REAL_GIT "\$@"
+LATEGIT
+chmod +x "$LATEBIN/git"
+PATH="$LATEBIN:$PATH" "$DASH" --out "$PAGE" --watch --interval "$WATCH_INTERVAL" \
+  --fleet-json "$EMPTY_FLEET" > "$TMP_ROOT/late.log" 2>&1 &
+LATE_PID=$!
+trap 'kill -0 "$LATE_PID" 2>/dev/null && kill -INT "$LATE_PID" 2>/dev/null; fm_test_cleanup' EXIT
+wait_until 20 test -s "$TMP_ROOT/late-hung.pids" \
+  || fail "the watch should have reached the read that hangs: $(cat "$TMP_ROOT/late.log")"
+[ ! -f "$TMP_ROOT/late-reads" ] \
+  || fail "the later read fired before the stop, so this case proves nothing"
+kill -INT "$LATE_PID"
+LATE_CODE=0
+wait "$LATE_PID" || LATE_CODE=$?
+trap fm_test_cleanup EXIT
+expect_code 0 "$LATE_CODE" "a watch stopped waiting on a read should still stop cleanly"
+[ ! -f "$TMP_ROOT/late-reads" ] \
+  || fail "a stopping watch started a new read that nothing was left to stop"
+pass "a stopping watch starts no further reads, so nothing outlives it by being launched too late"
+
+# Restore the registry the later sections read.
+cat > "$FM_HOME/data/projects.md" <<REG
+# Projects
+
+- alpha [no-mistakes] - clone kept in place at $REPOS/alpha (added 2026-01-01)
+- bravo [no-mistakes] - clone kept in place at $REPOS/bravo (added 2026-01-01)
+- charlie [no-mistakes] - clone kept in place at $REPOS/charlie (added 2026-01-01)
+- delta [local-only] - clone kept in place at $TMP_ROOT/nowhere (added 2026-01-01)
+REG
+
 # --- terminal presence and the jump command, against a real tmux ----------
 if ! command -v tmux >/dev/null 2>&1; then
   echo "skip: tmux not found - terminal presence assertions skipped"
