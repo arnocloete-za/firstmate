@@ -29,8 +29,8 @@ duplicates its window - it may be real work in progress - so Run only brings
 it to focus, creates nothing new, and the button says "Focused" rather than
 claiming a launch it did not make.
 A window a finished run left behind (tmux `remain-on-exit`) is not a running
-run: Run starts a fresh one there and leaves the old window and its output
-alone - see step 3.
+run: Run starts a fresh run in a new window and leaves that finished window
+and its output alone - see step 3.
 
 ## What it does
 
@@ -49,6 +49,9 @@ alone - see step 3.
    author, the last 5-10 commits, and the current branch versus that repo's own
    default branch.
    Every check it runs is read-only.
+   That header also owns the optional `run script at <path>` registry-description
+   phrase that gives a project the run script step 3's Run control launches, so
+   read it before telling the captain how to add one.
 
 3. **Build and serve the dashboard.**
    Run `bin/fm-dashboard-serve.sh build <tmp>.json`.
@@ -84,16 +87,19 @@ scanning.
 Projects are sorted worst-first (unavailable, then uncommitted, then off-default
 branch, then clean) so what needs attention surfaces without scrolling.
 A project with a commit in the last 7 days additionally renders its whole card
-with a light-blue background regardless of its sort position, so work
-currently in progress draws the eye even when it is not otherwise flagged.
+with a tinted background regardless of its sort position - light blue when that
+commit is the captain's own identity, warm amber when it is someone else's - so
+work currently in progress draws the eye even when it is not otherwise
+flagged.
 Each card also shows a small badge with its 1-based position in the grid as
 actually drawn (after the worst-first sort), so the captain can say
 "project 3" by voice when a project's name doesn't recognize well; that
 number is display order, not registry order, so it can shift between builds
 if a project's status moves it in the sort.
 A project's "Run" control, when it has a registered run script, is a small,
-plain, distinct button next to the card's clickable head - it never overloads
-that head's own click, which still just opens or closes the commits panel.
+plain, distinct button next to the card's head - it never overloads that head's
+own click, which for an available project still just opens or closes the
+commits panel.
 Do not restyle it toward the nautical/warm-paper design system without an
 explicit captain request to do so.
 
@@ -105,3 +111,6 @@ with the reason, sorted to the front alongside uncommitted projects - it is a
 signal that registry state needs attention, not silently dropped.
 This is expected for a stale or not-yet-cloned registry entry; do not treat it
 as a script failure.
+If such an entry also registered a run script, its Run control can only report
+"Failed" with the reason, because the server refuses to launch from a path that
+is not there.

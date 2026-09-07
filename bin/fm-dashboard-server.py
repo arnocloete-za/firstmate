@@ -8,12 +8,6 @@ every GET/HEAD request - the ordinary read-only dashboard page and its
 assets. Bound to 127.0.0.1 only by its caller (bin/fm-dashboard-serve.sh),
 and threaded, so one stalled or idle connection cannot wedge the board.
 
-A successful POST /run says which of its two outcomes happened:
-{"ok": true, "action": "launched"} when it started the run script, and
-{"ok": true, "action": "focused"} when the project's run was already going and
-it only brought that window to focus. The two are never collapsed - "Started"
-for a click that started nothing would be a lie.
-
 The one addition: a POST to /run with a JSON body {"name": "<project name>"}
 launches that project's registered run script in a local tmux session named
 exactly "dashboard", in a window named after the project with its working
@@ -24,6 +18,12 @@ is still live (an earlier run still going, or one the captain is watching),
 Run never kills or replaces it - real work in a tmux window is never destroyed
 from here - it just selects that window by its tmux window id so it comes to
 focus, and creates nothing new.
+
+A successful POST /run says which of its two outcomes happened:
+{"ok": true, "action": "launched"} when it started the run script, and
+{"ok": true, "action": "focused"} when the project's run was already going and
+it only brought that window to focus. The two are never collapsed - "Started"
+for a click that started nothing would be a lie.
 
 "Live" is decided per pane, not by name: under `remain-on-exit` tmux keeps a
 finished run's window around with a dead pane, and a dead pane is not a run.
