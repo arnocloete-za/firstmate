@@ -17,11 +17,13 @@
 # neither duplicate a window nor collide creating the session.
 #
 # It also proves its own blast radius: the run below is wrapped in a parent
-# phase that parks a canary session on the real default tmux socket, runs this
+# phase that parks a canary session on the default tmux socket, runs this
 # whole file - teardown included - as a child, and requires the canary to
-# still be there afterwards. FM_DASHBOARD_SERVE_CHILD=1 selects the child
-# phase; run that way by hand, the suite skips the proof and prints no final
-# ALL TESTS PASSED line, which the parent owns.
+# still be there afterwards. FM_DASHBOARD_SERVE_PHASE picks the phase:
+# "parent" (the default) runs the proof around a "supervised" child and owns
+# the final ALL TESTS PASSED line; "standalone" is the phase the parent execs
+# into when no canary can be parked, and it owns that line itself. Whichever
+# phase actually runs the assertions prints it exactly once.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -37,32 +39,45 @@ command -v curl >/dev/null 2>&1 || { echo "skip: curl not found"; exit 0; }
 #
 # The claim under test is structural: this suite's teardown can only ever
 # reach the private socket it created itself. Park a canary session on the
-# REAL default socket - where the captain's own sessions live - run the whole
-# suite as a child with $TMUX pointed at that same server (so a suite that
-# relied on TMUX_TMPDIR would resolve straight onto it), and require the
-# canary to survive. Only ever kills its own pid-named session, never a
-# server.
-if [ "${FM_DASHBOARD_SERVE_CHILD:-0}" != "1" ]; then
+# default socket - where the captain's own sessions live - run the whole suite
+# as a child with $TMUX pointed at that same server (so a suite that relied on
+# TMUX_TMPDIR would resolve straight onto it), and require the canary to
+# survive.
+#
+# Every call in this phase names its socket with `-L`, the same explicit
+# selection the child's shim uses, because an inherited $TMUX otherwise wins
+# over every other selector: against a stale one, `new-session` quietly builds
+# a phantom server at that dead path (or prints "error creating" and still
+# exits 0) while `display-message` and `has-session` fail outright, so the
+# proof would measure the wrong server or redden the whole suite over an
+# environment variable. Parking is best-effort for the same reason - if no
+# canary can be parked the suite runs standalone rather than failing - and
+# this phase only ever kills its own pid-named session, never a server.
+PHASE=${FM_DASHBOARD_SERVE_PHASE:-parent}
+if [ "$PHASE" = "parent" ]; then
   PARENT_TMUX=$(command -v tmux 2>/dev/null || true)
-  if [ -z "$PARENT_TMUX" ]; then
-    echo "skip: tmux not found, running the suite without the blast-radius proof"
-    FM_DASHBOARD_SERVE_CHILD=1 exec bash "$0"
-  fi
   CANARY="fm-dashboard-canary-$$"
-  "$PARENT_TMUX" new-session -d -s "$CANARY" -n keepalive 'sleep 600' \
-    || fail "could not park the canary session on the default tmux socket"
+  CANARY_SOCKET=
+  if [ -n "$PARENT_TMUX" ]; then
+    "$PARENT_TMUX" -L default new-session -d -s "$CANARY" -n keepalive 'sleep 600' \
+      >/dev/null 2>&1 || true
+    CANARY_SOCKET=$("$PARENT_TMUX" -L default \
+      display-message -p -t "=$CANARY" '#{socket_path}' 2>/dev/null || true)
+  fi
+  if [ -z "$CANARY_SOCKET" ]; then
+    echo "notice: no canary session could be parked on the default tmux socket; running the suite without the blast-radius proof"
+    FM_DASHBOARD_SERVE_PHASE=standalone exec bash "$0"
+  fi
   canary_cleanup() {
-    "$PARENT_TMUX" kill-session -t "=$CANARY" >/dev/null 2>&1 || true
+    "$PARENT_TMUX" -L default kill-session -t "=$CANARY" >/dev/null 2>&1 || true
     fm_test_cleanup
   }
   trap canary_cleanup EXIT INT TERM
-  CANARY_SOCKET=$("$PARENT_TMUX" display-message -p -t "=$CANARY" '#{socket_path}' 2>/dev/null)
-  [ -n "$CANARY_SOCKET" ] || fail "could not resolve the canary session's socket path"
 
-  FM_DASHBOARD_SERVE_CHILD=1 TMUX="$CANARY_SOCKET,0,0" bash "$0"
+  FM_DASHBOARD_SERVE_PHASE=supervised TMUX="$CANARY_SOCKET,0,0" bash "$0"
   CHILD_RC=$?
 
-  "$PARENT_TMUX" has-session -t "=$CANARY" 2>/dev/null \
+  "$PARENT_TMUX" -L default has-session -t "=$CANARY" 2>/dev/null \
     || fail "the suite teardown reached a tmux server it does not own: the canary session on $CANARY_SOCKET is gone"
   canary_cleanup
   trap - EXIT INT TERM
@@ -153,8 +168,13 @@ chmod +x "$TMP_ROOT/conctest.sh"
 # (the repo root this suite runs from), which is the wrong base: tmux resolves
 # the command against the project directory it is handed instead, so the two
 # disagree and tmux still exits 0.
-RELATIVE_SCRIPT="bin/fm-dashboard-server.py"
-[ -x "$RELATIVE_SCRIPT" ] || fail "test fixture error: $RELATIVE_SCRIPT should be executable from the suite's cwd"
+RELATIVE_SCRIPT=$(python3 -c 'import os, sys; print(os.path.relpath(sys.argv[1]))' \
+  "$ROOT/bin/fm-dashboard-server.py" 2>/dev/null || true)
+case "$RELATIVE_SCRIPT" in
+  ''|/*) fail "could not derive a relative run-script fixture from the suite's cwd: '$RELATIVE_SCRIPT'" ;;
+esac
+[ -x "$RELATIVE_SCRIPT" ] \
+  || fail "the relative run-script fixture does not resolve from the suite's cwd: $RELATIVE_SCRIPT"
 
 MISSING_SCRIPT="$TMP_ROOT/missing-run.sh"
 NOEXEC_SCRIPT="$TMP_ROOT/noexec-run.sh"
@@ -555,3 +575,4 @@ else
   pass "concurrent /run requests with no dashboard session yet cannot collide creating it"
 fi
 
+[ "$PHASE" = "supervised" ] || echo "ALL TESTS PASSED"
