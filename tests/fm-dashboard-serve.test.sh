@@ -119,6 +119,12 @@ pass "stop is idempotent when no server is running"
 # .gitignore is git itself: seed that exact file into a real repo, build the
 # board into it, and assert porcelain stays silent. Before the ignore rule this
 # reported `?? .dashboard/`.
+#
+# Every status call below pins --untracked-files=normal, the same mode
+# dirty_status pins, so the fixture reads the host's git the way the guard
+# does: a host-global `status.showUntrackedFiles = no` would otherwise hide
+# untracked paths entirely, making the clean-porcelain assertion vacuous and
+# leaving --ignored with nothing to report.
 GIT_HOME="$TMP_ROOT/git-home"
 mkdir -p "$GIT_HOME/state" || fail "could not create the fixture home"
 git init -q "$GIT_HOME" || fail "could not git init the fixture home"
@@ -126,7 +132,7 @@ cp "$ROOT/.gitignore" "$GIT_HOME/.gitignore" || fail "could not seed the tracked
 git -C "$GIT_HOME" add .gitignore || fail "could not stage the fixture .gitignore"
 git -C "$GIT_HOME" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' \
   commit -qm "tracked root gitignore" || fail "could not commit the fixture .gitignore"
-FIXTURE_STATUS=$(git -C "$GIT_HOME" status --porcelain) \
+FIXTURE_STATUS=$(git -C "$GIT_HOME" status --porcelain --untracked-files=normal) \
   || fail "git status does not work in the fixture home"
 [ -z "$FIXTURE_STATUS" ] \
   || fail "fixture home was not clean before the dashboard build: $FIXTURE_STATUS"
@@ -139,13 +145,13 @@ cleanup() { git_home_stop; "$SERVE" stop >/dev/null 2>&1 || true; fm_test_cleanu
 OUT3=$(FM_HOME="$GIT_HOME" "$SERVE" build "$DATA") || fail "build failed in a git home: $OUT3"
 [ -f "$GIT_HOME/.dashboard/index.html" ] \
   || fail "build did not write the board inside the git home"
-PORCELAIN=$(git -C "$GIT_HOME" status --porcelain) \
+PORCELAIN=$(git -C "$GIT_HOME" status --porcelain --untracked-files=normal) \
   || fail "git status failed in the fixture home after the build"
 [ -z "$PORCELAIN" ] \
   || fail "generated dashboard output left the home dirty: $PORCELAIN"
 # A clean porcelain is only meaningful if git actually saw the built board and
 # classified it as ignored - otherwise an empty status would prove nothing.
-IGNORED=$(git -C "$GIT_HOME" status --porcelain --ignored) \
+IGNORED=$(git -C "$GIT_HOME" status --porcelain --untracked-files=normal --ignored) \
   || fail "git status --ignored failed in the fixture home"
 printf '%s\n' "$IGNORED" | grep -q '^!! \.dashboard/' \
   || fail "git did not report the built board as an ignored path: $IGNORED"
