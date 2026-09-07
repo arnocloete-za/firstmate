@@ -12,7 +12,9 @@
 # ... - needs attention" warning rather than a quiet drift. Nothing is ever forced,
 # stashed, or discarded.
 # Still skips (benignly) local-only/no-origin projects, missing remotes/branches,
-# and fetch failures.
+# and fetch failures. A project-branch project sitting on its batch branch is
+# skipped benignly too: that clone is the captain's own working directory and that
+# branch is the model's healthy state, not drift to report or recover.
 # A candidate under projects/ must be the root of its own work tree: git discovery
 # walks up, so a plain nested directory would otherwise resolve to the enclosing
 # repository (the firstmate checkout) and be synced under that directory's label.
@@ -360,6 +362,17 @@ sync_project() {
   dirty=no
   [ -z "$(git -C "$PROJ" status --porcelain 2>/dev/null | head -1)" ] || dirty=yes
   recovered=no
+
+  if [ "$cur" != "$DEFAULT" ] && [ "$mode" = "project-branch" ]; then
+    # A project-branch project's clone IS the captain's own working directory, and
+    # sitting on a batch branch is that model's defined healthy state rather than
+    # drift (docs/architecture.md "The shared-directory model"). Reporting it as
+    # STUCK would raise a false alarm on every sweep, and recovering it would move
+    # the captain off his own branch, so this is a benign skip: the fetch and
+    # branch prune above already ran, and he owns when that directory moves.
+    echo "$label: skipped: project-branch project on its batch branch"
+    return 0
+  fi
 
   if [ "$cur" != "$DEFAULT" ]; then
     # Off the default branch. Auto-recover only the one unambiguously safe drift:

@@ -41,6 +41,11 @@ Choose that posture when adding or creating the project:
 - `no-mistakes` runs the full validation pipeline before a PR.
 - `direct-PR` pushes and opens a PR without the no-mistakes pipeline.
 - `local-only` has no required remote or PR and lands only through the approved local fast-forward path.
+- `project-branch` runs the pipeline and opens a PR like `no-mistakes`, but the work happens in this project's own registered directory on a batch branch the captain owns, and the PR waits for his word.
+  Register it for a project the captain works in himself and wants his crew working alongside him in, on his own branches.
+  It is remote-backed and pipeline-based, so it needs an `origin` remote and completes the same initialization as `no-mistakes`.
+  One piece of work at a time per such project: dispatch refuses a second worker into an occupied directory, and that refusal is a question for the captain rather than something to route around.
+  A `project-branch` project stays with the main firstmate and cannot be routed to a second mate, whose separate clone is by definition not the captain's own directory.
 - `no-mistakes-prod-only` is a conditional policy rather than one flat mode: genuinely internal-only tooling, automation, contributor or operator process, and release or submission work ships `direct-PR`, while product-facing, mixed, and uncertain work ships `no-mistakes`.
 
 `no-mistakes-prod-only` is the default for a newly added or created remote-backed project when the captain specifies nothing, and a project with no remote defaults to `local-only`.
@@ -56,7 +61,7 @@ Default it off for every project and every posture, and enable it only on the ca
 
 Confirm the source URL, local project name, delivery posture, and autonomy posture, stating the resolved default for each rather than asking the captain to invent one.
 Clone into `projects/<name>` and add the registry entry only after the destination is known to be unused.
-A `no-mistakes` or `no-mistakes-prod-only` project must have an `origin` remote and must complete the initialization procedure below, because a conditional policy's product-facing work runs the pipeline while its internal-only work still takes the direct PR.
+A `no-mistakes`, `no-mistakes-prod-only`, or `project-branch` project must have an `origin` remote and must complete the initialization procedure below, because a conditional policy's product-facing work runs the pipeline while its internal-only work still takes the direct PR.
 A `direct-PR` project needs an `origin` remote but skips no-mistakes initialization.
 A `local-only` project may have no remote and skips no-mistakes initialization.
 
@@ -72,7 +77,7 @@ The captain's request to create that local project authorizes this local initial
 
 ## Initialize
 
-Run no-mistakes initialization only for `no-mistakes` and `no-mistakes-prod-only` projects:
+Run no-mistakes initialization only for `no-mistakes`, `no-mistakes-prod-only`, and `project-branch` projects:
 
 ```sh
 cd projects/<name> && no-mistakes init && no-mistakes doctor
