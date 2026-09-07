@@ -4,22 +4,66 @@
 // The dashboard is a read-only display surface: it shows every registered
 // project's git health beside the work running right now, and it does nothing
 // else. There is no server, no endpoint, no button, and no path from the page
-// back to the fleet - re-running this command IS the refresh. Node because
+// back to the fleet - re-running this command IS the refresh, and --watch is
+// only this command re-running itself until stopped. Node because
 // firstmate already requires it (bin/fm-bootstrap.sh's COMMON_TOOLS), it needs
 // no jq/python subprocess per field, and it runs every git read concurrently.
 //
 // Usage:
 //   fm-dashboard.mjs [--fleet-json <file>] [--out <path>] [--open]
+//                    [--watch [--interval <seconds>]]
 //     --fleet-json <file>  project this already-captured `fm-fleet-snapshot.sh
 //                          --json` output instead of running it again. The
 //                          fleet read dominates this command's wall clock, so
 //                          pass a capture back in when you already have one.
+//                          Under --watch it is re-read every cycle.
 //     --out <path>         write the page here instead of
 //                          $FM_HOME/.dashboard/index.html
 //     --open               also hand the page to the desktop opener
+//     --watch              keep the page current until stopped (see below)
+//     --interval <seconds> seconds BETWEEN watch cycles; default 30, floor 5,
+//                          and rejected without --watch rather than ignored
 //     -h, --help           usage
 //
 // Prints the written path and its file:// URL on stdout.
+//
+// Watch mode
+// ----------
+// --watch re-reads the fleet every interval until the captain stops it, and
+// still adds no server, no endpoint, and no path from the page back to the
+// fleet. The page's only new job is to notice that this command rewrote it.
+//
+// The wait runs BETWEEN cycles, so cycles can never overlap or pile up however
+// slow a read is. Ctrl-C (SIGINT, SIGTERM, or SIGHUP) stops the loop, kills the
+// reads it started, starts no more, removes any staged temporary file, and
+// exits: no orphan process, no lock, and never a half-written page, because
+// every publish is a staged write plus a rename. A pass interrupted mid-read
+// publishes nothing at all, so a stop can never leave the board reporting things
+// as missing that were only unread.
+//
+// A cycle rewrites the page only when the board's own content changed. The
+// comparison is a hash over the rendered page with every per-run stamp
+// neutralized, carried in the page as <meta name="fm-dashboard-content">, so an
+// unchanged fleet leaves the file - and the captain's scroll position - alone.
+//
+// How the open page notices, and why it cannot lie about its age: each cycle
+// also publishes one tiny sibling script, <page>.watch.js, carrying that content
+// hash, the instant of the read, and whether the watch is still running. The
+// page re-loads that one file every few seconds and reloads itself only when the
+// hash it carries differs from its own - never on a timer, and never backwards,
+// because a stamp older than the page it is offered to is ignored. Scroll
+// position rides across the reload in window.name, which needs no storage
+// permission a file:// page may not have.
+// The sidecar is therefore also the ONLY evidence the page has that the watch is
+// alive, and that evidence expires. Every stamp says when the next one is owed,
+// measured against what that pass actually cost, and "watching" is only ever
+// shown before that moment - so a watch that is killed, or a sidecar that never
+// loads at all, lapses to "the watch has stopped" on its own. The read instant
+// likewise only moves forward and only from a stamp, so the age keeps climbing
+// and, past ten minutes, still says plainly not to trust the page, exactly as it
+// does with no watch at all. A clean stop publishes one last stamp saying it is
+// over, so the page reports it within seconds rather than waiting out that
+// expiry.
 //
 // Read-only: every git call is status/log/for-each-ref/symbolic-ref, and the
 // fleet read is bin/fm-fleet-snapshot.sh, the canonical structured fleet reader
@@ -48,11 +92,28 @@
 import { execFile } from 'node:child_process';
 import { mkdir, readFile, writeFile, rename, unlink } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { dirname, join, resolve } from 'node:path';
-import { promisify } from 'node:util';
+import { basename, dirname, join, resolve } from 'node:path';
 
-const run = promisify(execFile);
+// Every read this command starts is tracked, so a watch that is stopped takes
+// its own children down with it rather than leaving them behind - and once it is
+// stopping it starts no new ones, so an interrupted pass unwinds instead of
+// replacing the reads that were just killed.
+const children = new Set();
+let stopping = false;
+function run(command, args, options) {
+  if (stopping) return Promise.reject(new Error('the watch is stopping'));
+  return new Promise((settle, reject) => {
+    const child = execFile(command, args, options, (error, stdout, stderr) => {
+      children.delete(child);
+      if (error) reject(error);
+      else settle({ stdout, stderr });
+    });
+    children.add(child);
+  });
+}
+
 const BIN = dirname(fileURLToPath(import.meta.url));
 const FM_ROOT = process.env.FM_ROOT_OVERRIDE || resolve(BIN, '..');
 const FM_HOME = process.env.FM_HOME || FM_ROOT;
@@ -77,7 +138,16 @@ function die(msg) {
 }
 
 // --- arguments -------------------------------------------------------------
-const opts = { fleetJson: null, out: null, open: false };
+// The floor exists so no typo can turn the watch into a spin; the default is
+// well clear of what one cycle costs on a real fleet, where the fleet read
+// alone is seconds of work.
+const DEFAULT_INTERVAL = 30;
+const MIN_INTERVAL = 5;
+
+const opts = {
+  fleetJson: null, out: null, open: false, watch: false, interval: DEFAULT_INTERVAL,
+};
+let intervalGiven = false;
 for (let i = 2; i < process.argv.length; i += 1) {
   const arg = process.argv[i];
   if (arg === '--fleet-json' || arg === '--out') {
@@ -86,6 +156,17 @@ for (let i = 2; i < process.argv.length; i += 1) {
     if (arg === '--fleet-json') opts.fleetJson = value;
     else opts.out = value;
     i += 1;
+  } else if (arg === '--interval') {
+    const value = process.argv[i + 1];
+    if (value === undefined) die('--interval requires a value');
+    if (!/^[0-9]+$/.test(value) || Number(value) < MIN_INTERVAL) {
+      die(`--interval must be a whole number of seconds, ${MIN_INTERVAL} or more`);
+    }
+    opts.interval = Number(value);
+    intervalGiven = true;
+    i += 1;
+  } else if (arg === '--watch') {
+    opts.watch = true;
   } else if (arg === '--open') {
     opts.open = true;
   } else if (arg === '-h' || arg === '--help') {
@@ -96,11 +177,25 @@ for (let i = 2; i < process.argv.length; i += 1) {
     process.exit(2);
   }
 }
+// An interval with no watch behind it does nothing, so say so rather than
+// letting the captain believe he set a cadence.
+if (intervalGiven && !opts.watch) die('--interval means nothing without --watch');
+
+// The page and, under --watch, the one sibling file it reads to notice a
+// change. The sidecar is named after the page so two boards written to
+// different paths can never read each other's stamp.
+const out = opts.out ? resolve(opts.out) : join(FM_HOME, '.dashboard', 'index.html');
+const stampPath = `${out}.watch.js`;
+const stampName = basename(stampPath);
 
 // --- small helpers ---------------------------------------------------------
 const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (c) => (
   { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
 ));
+
+// A value inlined into a <script> block: JSON with '<' escaped, so no filename
+// or stamp can end the script element early.
+const js = (value) => JSON.stringify(value).replace(/</g, '\\u003c');
 
 // classes/lines: drop the empty entries, so no element carries a dangling class
 // attribute and no optional block leaves a blank line in the page.
@@ -472,21 +567,30 @@ a { color: var(--info); }
 // The page is generated when the command runs; there is no feed behind it. Live
 // work ages far faster than git health, so the live section states its own age,
 // keeps recomputing it, and past ten minutes says plainly not to trust it.
+//
+// readAt only ever moves forward, and only a watch stamp moves it, so nothing
+// here can make an old page look young.
 const SCRIPT = `
 const el = document.getElementById('live-age');
-if (el) {
-  const at = Date.parse(el.dataset.at);
-  const tick = () => {
-    const mins = Math.floor((Date.now() - at) / 60000);
-    el.textContent = mins < 1 ? 'read just now' : 'read ' + mins + 'm ago';
-    if (mins >= 10) {
-      el.classList.add('stale');
-      el.textContent += ' - too old to walk into a terminal on; re-run /dashboard';
-    }
-  };
-  tick();
-  setInterval(tick, 30000);
-}
+let readAt = el ? Date.parse(el.dataset.at) : NaN;
+let watched = false;
+let dueBy = 0;
+const setReadAt = (iso) => { const t = Date.parse(iso); if (t > readAt) readAt = t; };
+const tick = () => {
+  if (!el || Number.isNaN(readAt)) return;
+  const age = Date.now() - readAt;
+  const mins = Math.floor(age / 60000);
+  let text = mins < 1 ? 'read just now' : 'read ' + mins + 'm ago';
+  if (watched) {
+    text += Date.now() <= dueBy ? ' \\u00b7 watching' : ' \\u00b7 the watch has stopped';
+  }
+  const stale = mins >= 10;
+  if (stale) text += ' - too old to walk into a terminal on; re-run /dashboard';
+  el.classList.toggle('stale', stale);
+  el.textContent = text;
+};
+tick();
+setInterval(tick, 30000);
 for (const button of document.querySelectorAll('button.copy')) {
   button.addEventListener('click', () => {
     navigator.clipboard.writeText(button.dataset.command).then(() => {
@@ -497,7 +601,63 @@ for (const button of document.querySelectorAll('button.copy')) {
 }
 `;
 
-function renderLive(live) {
+// Added only to a page a watch wrote. It reads one sibling file the same watch
+// rewrites and reloads the page only when that file reports different content -
+// never on a timer, and never from a stamp older than this page, so a leftover
+// stamp can never start a reload loop.
+//
+// "Watching" is a claim with an expiry the watch itself sets and every stamp
+// renews. A watch that is killed renews nothing, so the claim lapses on its own;
+// a sidecar that never loads at all lapses the same way. Nothing here can keep
+// saying watching because a watch used to be running.
+const STAMP_POLL_MS = 5000;
+const watchScript = ({ renderedAt, contentHash, dueBy }) => `
+watched = true;
+dueBy = Date.parse(${js(dueBy)});
+(() => {
+  const SRC = ${js(stampName)};
+  const MINE = ${js(contentHash)};
+  const RENDERED = Date.parse(${js(renderedAt)});
+  const KEY = 'fm-dashboard-scroll:';
+  // window.name survives a reload in the same tab and needs no storage
+  // permission, which a file:// page does not reliably have.
+  try {
+    if (typeof window.name === 'string' && window.name.indexOf(KEY) === 0) {
+      const y = Number(window.name.slice(KEY.length));
+      window.name = '';
+      if (Number.isFinite(y)) {
+        if ('scrollRestoration' in history) history.scrollRestoration = 'manual';
+        window.scrollTo(0, y);
+      }
+    }
+  } catch (error) { /* a tab that will not hold a note still shows the board */ }
+  window.fmDashboardStamp = (stamp) => {
+    if (!stamp || typeof stamp.readAt !== 'string') return;
+    const alive = stamp.watching !== false;
+    dueBy = alive ? Math.max(dueBy, Date.parse(stamp.dueBy)) : 0;
+    setReadAt(stamp.readAt);
+    tick();
+    if (!alive || stamp.content === MINE) return;
+    if (!(Date.parse(stamp.readAt) > RENDERED)) return;
+    try { window.name = KEY + String(window.scrollY); } catch (error) { /* keep the reload */ }
+    location.reload();
+  };
+  const poll = () => {
+    const tag = document.createElement('script');
+    tag.src = SRC + '?t=' + Date.now();
+    tag.onload = tag.onerror = () => tag.remove();
+    document.head.appendChild(tag);
+  };
+  setInterval(() => { poll(); tick(); }, ${STAMP_POLL_MS});
+  poll();
+})();
+`;
+
+// The sidecar itself: one call, guarded so a page with no watch pickup in it
+// cannot be broken by a stamp left over from an earlier run.
+const stampFile = (stamp) => `if (window.fmDashboardStamp) window.fmDashboardStamp(${js(stamp)});\n`;
+
+function renderLive(live, observedAt) {
   if (!live.available) {
     return `<div class="empty">Could not read the work running now: ${esc(live.reason)}</div>`;
   }
@@ -505,7 +665,7 @@ function renderLive(live) {
   const wants = live.tasks.filter((t) => t.waiting.wantsCaptain).length;
   const summary = `<div class="summary"><b>${live.tasks.length}</b> running`
     + (wants ? ` · <b>${wants}</b> waiting on you` : '')
-    + ` · <span id="live-age" data-at="${esc(live.observedAt || new Date().toISOString())}"></span></div>`;
+    + ` · <span id="live-age" data-at="${esc(observedAt)}"></span></div>`;
   const rows = live.tasks.map((task) => {
     const flag = task.waiting.kind === 'conn' ? 'conn' : (task.waiting.wantsCaptain ? 'wants' : '');
     return `<div class="${classes('row', flag)}">
@@ -575,12 +735,13 @@ function renderProjects(projects) {
   return `${summary}\n<div class="grid">\n${cards}\n</div>`;
 }
 
-function page(projects, live, generatedAt) {
+function page({ projects, live, generatedAt, observedAt, renderedAt, contentHash, dueBy }) {
   return `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="fm-dashboard-content" content="${esc(contentHash)}" />
 <title>Fleet Dashboard</title>
 <style>${STYLE}</style>
 </head>
@@ -592,46 +753,158 @@ function page(projects, live, generatedAt) {
 </header>
 <section class="section">
   <h2>Live work</h2>
-  ${renderLive(live)}
+  ${renderLive(live, observedAt)}
 </section>
 <section class="section">
   <h2>Projects</h2>
   ${renderProjects(projects)}
 </section>
 </main>
-<script>${SCRIPT}</script>
+<script>${SCRIPT}${opts.watch ? watchScript({ renderedAt, contentHash, dueBy }) : ''}</script>
 </body>
 </html>
 `;
 }
 
 // --- 5. generate -----------------------------------------------------------
-const registry = await readRegistry();
-// The fleet read dominates the wall clock, so it runs alongside every project's
-// git reads rather than after them.
-const [projects, live] = await Promise.all([
-  Promise.all(registry.map(projectHealth)),
-  liveWork(),
-]);
+// Every file this command publishes carries fleet state - PR links, what each
+// task is waiting on - so it stays private to the captain, staged under its own
+// name and published by rename so a half-written file is never what the browser
+// picks up.
+const staged = new Set();
+async function publish(path, text) {
+  const tmp = `${path}.${process.pid}.tmp`;
+  staged.add(tmp);
+  try {
+    await writeFile(tmp, text, { mode: 0o600 });
+    await rename(tmp, path);
+  } finally {
+    staged.delete(tmp);
+    await unlink(tmp).catch(() => {});
+  }
+}
 
-// The page carries fleet state - PR links, what each task is waiting on - so it
-// stays private to the captain, staged under its own name and published by
-// rename so a half-written page is never what he opens.
-const out = opts.out ? resolve(opts.out) : join(FM_HOME, '.dashboard', 'index.html');
-await mkdir(dirname(out), { recursive: true, mode: 0o700 });
-const staged = `${out}.${process.pid}.tmp`;
-try {
-  await writeFile(staged, page(projects, live, localStamp(new Date())), { mode: 0o600 });
-  await rename(staged, out);
-} catch (error) {
-  await unlink(staged).catch(() => {});
-  die(`cannot write the dashboard: ${error.message}`);
+const CONTENT_META = /<meta name="fm-dashboard-content" content="([^"]*)"/;
+let lastStamp = null;
+
+// One pass: read everything, publish the page only if the board changed, and
+// under --watch publish the stamp every time, because the stamp is what proves
+// to the open page that this command is still reading.
+async function cycle() {
+  const started = Date.now();
+  const registry = await readRegistry();
+  // The fleet read dominates the wall clock, so it runs alongside every
+  // project's git reads rather than after them.
+  const [projects, live] = await Promise.all([
+    Promise.all(registry.map(projectHealth)),
+    liveWork(),
+  ]);
+  // Reads killed by a stop would render a board full of things that are only
+  // missing because the watch was interrupted, so an interrupted pass publishes
+  // nothing and the last good page stands.
+  if (stopping) return false;
+  const now = new Date();
+  const readAt = now.toISOString();
+  // When the next stamp is owed, measured against what this pass actually
+  // cost rather than a guess, so the page's "watching" claim expires on this
+  // watch's real cadence however slow the fleet is to read.
+  const dueBy = new Date(
+    now.getTime() + opts.interval * 1000 + Math.max((Date.now() - started) * 2, 5000),
+  ).toISOString();
+  const render = (stamps) => page({ projects, live, ...stamps });
+  const contentHash = createHash('sha1')
+    .update(render({
+      generatedAt: '-', observedAt: '-', renderedAt: '-', contentHash: '-', dueBy: '-',
+    }))
+    .digest('hex')
+    .slice(0, 16);
+
+  await mkdir(dirname(out), { recursive: true, mode: 0o700 });
+  const existing = await readFile(out, 'utf8').catch(() => null);
+  const changed = CONTENT_META.exec(existing || '')?.[1] !== contentHash;
+  if (changed) {
+    await publish(out, render({
+      generatedAt: localStamp(now),
+      observedAt: live.observedAt || readAt,
+      renderedAt: readAt,
+      contentHash,
+      dueBy,
+    }));
+  }
+  lastStamp = { content: contentHash, readAt, dueBy };
+  if (opts.watch) await publish(stampPath, stampFile({ ...lastStamp, watching: true }));
+  return changed;
 }
 
 const url = pathToFileURL(out).href;
-process.stdout.write(`dashboard: ${out}\n`);
-process.stdout.write(`open: ${url}\n`);
-if (opts.open) {
+async function openPage() {
   const opener = process.platform === 'darwin' ? 'open' : 'xdg-open';
   await run(opener, [url]).catch(() => {});
+}
+
+if (!opts.watch) {
+  try {
+    await cycle();
+  } catch (error) {
+    die(`cannot write the dashboard: ${error.message}`);
+  }
+  process.stdout.write(`dashboard: ${out}\n`);
+  process.stdout.write(`open: ${url}\n`);
+  if (opts.open) await openPage();
+} else {
+  // --- 6. watch ------------------------------------------------------------
+  const SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP'];
+  let wake = () => {};
+  const sleep = (ms) => new Promise((done) => {
+    const timer = setTimeout(done, ms);
+    wake = () => { clearTimeout(timer); done(); };
+  });
+
+  // Stopping never races a publish: a cycle awaits its own write, so killing
+  // the reads it started can only cut the reading short, never the writing.
+  function requestStop() {
+    if (stopping) process.exit(130);
+    stopping = true;
+    for (const child of children) child.kill('SIGTERM');
+    wake();
+  }
+  for (const signal of SIGNALS) process.on(signal, requestStop);
+
+  // The link is only handed over once a pass has actually published the page,
+  // so it never points at a file that is not there yet.
+  let announced = false;
+  while (!stopping) {
+    let changed = false;
+    let passed = true;
+    try {
+      changed = await cycle();
+    } catch (error) {
+      // A pass that fails is this pass only; the page stands as last written
+      // and keeps aging honestly until one succeeds.
+      passed = false;
+      if (!stopping) process.stderr.write(`fm-dashboard: this pass did not finish: ${error.message}\n`);
+    }
+    if (stopping) break;
+    if (!announced && passed) {
+      announced = true;
+      process.stdout.write(`dashboard: ${out}\n`);
+      process.stdout.write(`open: ${url}\n`);
+      process.stdout.write(
+        `watching: re-reading the fleet every ${opts.interval}s - press Ctrl-C to stop\n`,
+      );
+      if (opts.open) await openPage();
+    } else if (changed) {
+      process.stdout.write(`updated: ${localStamp(new Date())}\n`);
+    }
+    await sleep(opts.interval * 1000);
+  }
+
+  for (const signal of SIGNALS) process.removeListener(signal, requestStop);
+  for (const tmp of staged) await unlink(tmp).catch(() => {});
+  // Tell the open page the watch is over, so it says so within seconds instead
+  // of waiting for the last stamp's expiry to pass.
+  if (lastStamp) {
+    await publish(stampPath, stampFile({ ...lastStamp, watching: false })).catch(() => {});
+  }
+  process.stdout.write('stopped: the page stays as last written and shows its age climbing\n');
 }

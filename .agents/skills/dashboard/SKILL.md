@@ -21,8 +21,8 @@ registered project's git health.
 It is display only.
 The page has no server, no endpoint, and no button; nothing on it can start,
 stop, steer, or change anything, and re-running the command is the refresh.
-Every read is read-only, and the only file written is the page itself under
-`$FM_HOME/.dashboard/`.
+Every read is read-only, and the only files written are the page itself and, in
+watch mode, the one sibling file it reads, both under `$FM_HOME/.dashboard/`.
 
 ## What it does
 
@@ -43,6 +43,31 @@ Every read is read-only, and the only file written is the page itself under
 
 `/dashboard` does not run `/bearings`.
 The chat digest is that command's job; this one is the page.
+
+## Keeping the page current
+
+`bin/fm-dashboard.mjs --watch` re-reads the fleet on an interval until the
+captain stops it, so the page he already has open updates itself.
+Its header owns the interval, the default, and the whole watch contract.
+
+Offer it when he says the board goes stale on him, asks how to refresh it, or is
+about to sit with it while work is running.
+Give him the command to run in his own terminal, with the link, and tell him
+Ctrl-C is how it stops - the watch is his process, not one firstmate holds.
+Never start a watch for him from firstmate's own session: it would die with the
+turn, and a watch nobody can see or stop is worse than no watch.
+One watch per page is enough; a second one adds reads and changes nothing.
+
+The page reloads itself only when the board actually changed, and it keeps his
+scroll position when it does, so it can be left open.
+If the watch stops, the page says so and then ages exactly as an unwatched page
+does: the live section keeps counting up and past ten minutes says plainly not
+to trust it.
+A Ctrl-C is reported within seconds because the watch says goodbye on its way
+out; a watch that is killed outright is reported once the interval it promised
+passes without another read.
+Nothing on the page can claim to be current because a watch used to be running,
+which is the whole reason it is safe to leave open.
 
 ## Design intent
 
@@ -93,7 +118,8 @@ The page is generated when the command runs; there is no live feed behind it.
 Live work goes stale in a way git health does not, so the live section states its
 own age, keeps recomputing it while the tab stays open, and past ten minutes says
 plainly not to walk into a terminal on the strength of it.
-If he wants current state, the answer is to re-run `/dashboard`.
+If he wants current state, the answer is to re-run `/dashboard`, or to leave a
+watch running (above) so the re-running happens for him.
 
 ## When something looks unavailable
 
