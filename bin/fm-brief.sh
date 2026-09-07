@@ -58,6 +58,16 @@
 # Every scaffold also carries the steering-inbox receive-and-ack section:
 # process state/<id>.inbox/*.msg in order and acknowledge each by moving it to
 # handled/ (record, doorbell, and ladder owned by bin/fm-task-inbox-lib.sh).
+# Every scaffold carries the captain-in-the-pane section too, rendered from one
+# builder (fm_brief_captain_pane_section) so the worker's side of AGENTS.md
+# hard rule 4 has a single wording: it may never initiate contact with the
+# captain, but when he is present in its own terminal it converses with him
+# there, treats his instruction as authoritative, names any conflict with its
+# delivery contract or a safety rule instead of silently obeying or refusing,
+# echoes what he settled into the status file as a `note:` line plus a keyed
+# `resolved` close when it answers a decision that worker raised, and refreshes
+# the state/<id>.conn flag on every captain message so supervision stands off
+# the task while he is in it (bin/fm-conn-lib.sh).
 # Ship tasks include a project-memory section so durable project-intrinsic
 # learnings can be committed to AGENTS.md through the project's delivery path;
 # it carries the AGENTS.md authoring bar (widely useful knowledge only, pointers
@@ -189,6 +199,51 @@ shell_quote() {
 
 STATUS_FILE=$(shell_quote "$STATE/$ID.status")
 INBOX_DIR=$(shell_quote "$STATE/$ID.inbox")
+CONN_FILE=$(shell_quote "$STATE/$ID.conn")
+
+# The captain-in-the-pane contract, rendered identically into every scaffold
+# kind so the worker's side of AGENTS.md hard rule 4 has ONE wording. The rule
+# splits by direction: a worker may never INITIATE contact with the captain,
+# but when he is present in that worker's own terminal the worker converses
+# with him there and treats his instruction as authoritative.
+#
+# Two records make that safe, and both are the worker's own: the durable echo
+# of what he settled (a `note:` line, the informational surface
+# bin/fm-classify-lib.sh presents through firstmate's ordinary review) plus the
+# keyed `resolved` close when his answer settles a decision this worker raised,
+# and the per-task conn flag that stands supervision off the task while he is
+# in it (bin/fm-conn-lib.sh owns that flag, its bounded expiry, and its
+# one-line format; the worker writes it directly for the same reason it appends
+# the status file directly - a crewmate's worktree has no firstmate home in its
+# environment).
+#
+# $1 is the phrase naming what a captain instruction outranks in this scaffold
+# kind, the only thing that legitimately differs between them.
+fm_brief_captain_pane_section() {  # <outranks-phrase>
+  local outranks=$1 section
+  IFS= read -r -d '' section <<EOF || true
+# The captain in your pane
+An unmarked human message in this pane is the captain himself: he starts the work through firstmate and then comes here to run it with you directly.
+This is the only place you ever address him directly, so converse normally and in full sentences, as you would with any person - not status shorthand and not a report.
+Never initiate contact with him, and never try to reach him anywhere else; anything you raise on your own goes through the status file, never by addressing him.
+His instruction is authoritative: where it differs from $outranks, his words win.
+If what he asks conflicts with your delivery contract or a safety rule you are under - isolation, push or merge authority, anything destructive or irreversible - say so plainly in the pane and let him decide. Never silently obey and never silently refuse.
+His presence is never by itself authority to skip validation, merge, or take a destructive action; he has to ask for that himself.
+
+This terminal is not durable and firstmate never reads your conversation, so whenever he SETTLES something here, record it:
+1. Tell firstmate what he decided, in his own words:
+   \`echo "note: captain in the pane: {his words}" >> $STATUS_FILE\`
+   \`note:\` exists for exactly this and reaches firstmate through its ordinary review. It is not a progress report, so keep it to what he actually decided.
+2. If his answer settles a decision or blocker YOU had raised, also close it by its key:
+   \`echo "resolved [key={the key you opened}]: captain in the pane: {his words}" >> $STATUS_FILE\`
+   Nothing else closes it, so without this line firstmate keeps re-raising a question the captain has already answered.
+
+Mark the terminal as his while he is in it - on his FIRST message and again on EVERY later one:
+   \`date +%s > $CONN_FILE\`
+That single line is what stops firstmate and its monitoring from steering this worker while the two of you are talking. It lapses on its own once he stops typing, which is why every message must refresh it. Write it for nothing else: a real captain message in this pane is the only thing it may ever mean.
+EOF
+  printf '%s' "${section%$'\n'}"
+}
 
 # The receive-and-ack half of the steering-inbox contract, included in every
 # scaffold kind. The record format, doorbell line, and re-ring ladder are
@@ -202,6 +257,16 @@ When a terminal message says an instruction is waiting there - and at any natura
 The move IS the acknowledgement: without it firstmate rings again and eventually treats you as stuck. An empty or absent inbox needs no action.
 EOF
 INBOX_SECTION=${INBOX_SECTION%$'\n'}
+
+# The one thing the shared captain-pane section names differently per kind: a
+# crewmate's build instructions come from the Firstmate spec, a persistent
+# mate's from its charter and the requests routed to it.
+# shellcheck disable=SC2016  # single quotes are deliberate: the backticks are literal brief markdown, not a command substitution.
+CAPTAIN_PANE_OUTRANKS='the `## Firstmate spec` above'
+if [ "$KIND" = secondmate ]; then
+  CAPTAIN_PANE_OUTRANKS='the charter above or a request routed to you'
+fi
+CAPTAIN_PANE_SECTION=$(fm_brief_captain_pane_section "$CAPTAIN_PANE_OUTRANKS")
 
 if [ "$KIND" = secondmate ]; then
 SECONDMATE_PROJECTS=""
@@ -246,7 +311,7 @@ Act only on tasks the main firstmate routes to you.
 Never start a survey, audit, or "find improvements" sweep on your own initiative; that is not your job and it is unwanted.
 
 # The captain and the parent channel
-Nobody reads this chat: the captain and the main firstmate see only what is appended to $STATUS_FILE, and a captain-facing sentence that is not appended there has not been sent.
+Nobody reads this chat unless the captain comes into it himself, which the captain section below owns entirely: otherwise the captain and the main firstmate see only what is appended to $STATUS_FILE, and a captain-facing sentence that is not appended there has not been sent.
 That file is your parent channel, and in this home it IS the captain: every sentence you would say to the captain, and every outcome the local AGENTS.md tells a firstmate to bring to the captain, is one appended line there, never chat.
 Your own machinery publishes the durable facts about your crew's work for you (\`bin/fm-parent-channel-lib.sh\`): a child's terminal done or failed line with its note and PR on every supervision poll, a PR-ready line when you register a PR, a task you hold for the captain and its answer, a merge, and a child's final line at cleanup all reach the parent channel from the scripts that record them, whether or not you append anything.
 What only you can append is judgement: the answer to a marked request below, a recommendation or caveat on a delivered outcome, a blocker or failure of your own, and anything else you would otherwise say to the captain.
@@ -261,10 +326,12 @@ Optional helper: \`bin/fm-secondmate-report.sh\` can append a correlated status 
 For a terse result, a status line is the whole answer.
 For a detailed answer (an investigation, a plan, an audit), write it to a doc under your home's \`data/\` and append a status line that points to that doc - the scout-report pattern - so the main firstmate is woken and can read it.
 Before treating an investigation or visual review as complete, load \`captain-hold-lifecycle\` from this home's \`.agents/skills/\` and pass its shared completion gate.
-A message with NO marker is the captain typing directly into your pane: treat it as authoritative captain intervention and stay conversational exactly as you would for any captain message; do not force it onto the status path.
+A message with NO marker is the captain typing directly into your pane; the captain section below owns everything about that case, including what you must record afterwards.
 A request arriving through the instruction inbox below follows the same marker and reply rules.
 
 $INBOX_SECTION
+
+$CAPTAIN_PANE_SECTION
 
 # Escalation to main firstmate
 Handle routine work yourself.
@@ -382,6 +449,8 @@ The report is the only thing that survives, so anything worth keeping must be in
 
 $INBOX_SECTION
 
+$CAPTAIN_PANE_SECTION
+
 # Definition of done
 Write your findings to \`$DATA/$ID/report.md\`.
 The report must stand alone: what you did, what you found, the evidence (commands run, output, file:line references), and what you recommend.
@@ -459,6 +528,8 @@ $RULE1
    daemon error, append \`blocked: {the daemon error}\` and stop; only firstmate manages the daemon.
 
 $INBOX_SECTION
+
+$CAPTAIN_PANE_SECTION
 
 # Project memory
 If \`AGENTS.md\` or \`CLAUDE.md\` already exists, or if this task produced durable project-intrinsic knowledge, run \`$FM_ROOT/bin/fm-ensure-agents-md.sh .\` in the worktree.

@@ -1137,6 +1137,37 @@ test_scout_skips_run_lookup() {
 }
 
 # (j) torn-down worktree and missing meta are graceful (unknown/none, exit 0)
+# The captain working in a task's own terminal is appended, never substituted:
+# the state and its source must stay exactly what the authoritative source
+# said, or a reader would lose the actual work state at the very moment a
+# quiet pane most needs explaining. A lapsed flag stops appearing.
+test_conn_is_appended_without_changing_state_or_source() {
+  reset_fakes
+  local d out before
+  d=$(new_case conn-segment)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/conned.meta" "window=fm:fm-conned" "worktree=$d/no-such-worktree" "kind=ship"
+
+  before=$(run_crew_state "$d" conned)
+  assert_not_contains "$before" "captain has the conn" \
+    "no conn record must add no segment"
+
+  date +%s > "$d/state/conned.conn"
+  out=$(run_crew_state "$d" conned)
+  assert_contains "$out" "state: unknown" "the conn must not change the reported state"
+  assert_contains "$out" "source: none" "the conn must not change the reported source"
+  assert_contains "$out" "captain has the conn (" \
+    "a held conn must be reported with how long it has been held"
+  assert_contains "$out" "worktree gone" \
+    "the conn segment must be appended to the existing detail, not replace it"
+
+  printf '%s\n' "$(( $(date +%s) - 100000 ))" > "$d/state/conned.conn"
+  out=$(run_crew_state "$d" conned)
+  assert_not_contains "$out" "captain has the conn" \
+    "a lapsed conn must stop being reported"
+  pass "fm-crew-state: a held conn is appended to the canonical line and lapses on its own"
+}
+
 test_torn_down_worktree() {
   reset_fakes
   local d; d=$(new_case torndown)
@@ -1589,6 +1620,7 @@ test_dead_window_still_reports_active_run_step
 test_no_timeout_uses_perl_bound
 test_scout_skips_run_lookup
 test_torn_down_worktree
+test_conn_is_appended_without_changing_state_or_source
 test_remote_alive_with_log_uses_status_log
 test_remote_alive_idle_is_healthy_not_gone
 test_remote_unreachable_is_unknown_remote_not_dead

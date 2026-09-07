@@ -2,8 +2,9 @@
 # Behavior tests for the bearings projection wrapper over fm-fleet-snapshot.sh.
 # Covers the output/token bound, TOON/JSON parity, the local-only default (zero
 # GitHub/network calls), the --include-prs opt-in path, graceful degradation on a
-# partial PR-fetch failure, end-to-end unresolved-decision durability, and current
-# report pointers.
+# partial PR-fetch failure, end-to-end unresolved-decision durability, current
+# report pointers, and the captain-at-the-conn surface (a task supervision is
+# standing off must be visible, with its age, rather than silently absent).
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -1078,6 +1079,37 @@ test_open_decision_surfaces_end_to_end() {
       and .key == "mate-decision-race" and .verb == "captain-hold")
   ' >/dev/null || fail "an authoritative captain hold must surface in decisions_open: $json"
   pass "an authoritative captain hold surfaces end-to-end"
+}
+
+# A task supervision is deliberately standing off must never become an
+# invisible hole in a "pick up where I left off" read: bearings has to name it
+# and say how long the captain has held that terminal. The empty array is the
+# normal case, which is what keeps the surface unambiguous rather than absent.
+test_conn_surfaces_with_its_age() {
+  local home fakebin json toon
+  home=$(make_home conn); write_fixture "$home"
+  fakebin=$(make_fakebin "$home")
+
+  json=$(run "$home" "$fakebin" --json)
+  printf '%s' "$json" | jq -e '.conn == []' >/dev/null \
+    || fail "with nothing under the conn, conn must be an explicit empty array: $json"
+
+  printf '%s\n' "$(( $(date +%s) - 42 ))" > "$home/state/ship-task.conn"
+  json=$(run "$home" "$fakebin" --json)
+  printf '%s' "$json" | jq -e '
+    .conn | length == 1 and any(.[]; .id == "ship-task" and .age_seconds >= 42)
+  ' >/dev/null || fail "a held conn must surface with its age: $json"
+  toon=$(run "$home" "$fakebin")
+  assert_contains "$toon" "conn[1]{id,age_seconds}:" \
+    "TOON must render the conn surface as a tabular array"
+  assert_contains "$toon" "ship-task," "TOON conn row must name the task"
+
+  # A lapsed record is not held, so it leaves the surface on its own.
+  printf '%s\n' "$(( $(date +%s) - 100000 ))" > "$home/state/ship-task.conn"
+  json=$(run "$home" "$fakebin" --json)
+  printf '%s' "$json" | jq -e '.conn == []' >/dev/null \
+    || fail "a lapsed conn record must leave the conn surface: $json"
+  pass "bearings: a task the captain holds surfaces with its age and lapses on its own"
 }
 
 test_report_pointers_surface() {
@@ -2319,6 +2351,7 @@ test_main_captain_readiness_matches_secondmate_projection
 test_completed_scout_report_not_pending
 test_open_decision_surfaces_end_to_end
 test_report_pointers_surface
+test_conn_surfaces_with_its_age
 test_superseded_queued_item_dropped_by_default
 test_include_prs_is_the_only_fetch_path
 test_partial_github_failure_degrades

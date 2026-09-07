@@ -28,6 +28,7 @@ Recover a genuinely stuck remote mate only through `bin/fm-spawn.sh <id> --secon
 
 Treat the digest's endpoint result as a presence signal, not proof that the task's work or validation run is gone.
 Read the targeted current state with `bin/fm-crew-state.sh <id>` before deciding to relaunch.
+A worker reported as having the conn is not stuck: the captain is working in that terminal, its quiet pane is him thinking, and this playbook does not apply until the conn lapses (`AGENTS.md` section 8).
 A no-mistakes run matched to the crew's branch and current code remains authoritative when the endpoint is dead: handle a terminal or parked run through the normal lifecycle, and keep supervising an active run instead of creating a duplicate worker.
 
 When no authoritative run accounts for the task, inspect only its recorded backend and worktree inventory.

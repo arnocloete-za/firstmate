@@ -260,6 +260,33 @@ test_interrupt_sends_each_harness_verified_key() {
   pass "fm-control interrupt: every verified harness gets its own verified key and repeat count"
 }
 
+# An interrupt cancels a turn the captain is waiting on and a relaunch discards
+# the conversation he is having, so this plane must say loudly when it is about
+# to do that to a terminal he is standing in. Deliberately an ADVISORY: he may
+# have asked for exactly this action, so no verified lifecycle verb gains a new
+# way to refuse. It must also go quiet once the flag lapses.
+test_conn_notice_is_advisory_on_the_lifecycle_plane() {
+  local dir out rc
+  dir=$(new_case conn-notice)
+  add_task "$dir" t1 claude
+  alive_as "$dir" claude
+  date +%s > "$dir/home/state/t1.conn"
+
+  out=$(run_control "$dir" t1 interrupt); rc=$?
+  expect_code 0 "$rc" "a conn-held task must still accept a lifecycle action"$'\n'"$out"
+  assert_contains "$out" "captain has the conn" \
+    "fm-control must name the conn before acting on a task the captain is in"
+  assert_contains "$out" "an interrupt or relaunch here cancels or discards" \
+    "the notice must say what the action costs the captain's conversation"
+
+  printf '%s\n' "$(( $(date +%s) - 100000 ))" > "$dir/home/state/t1.conn"
+  out=$(run_control "$dir" t1 interrupt); rc=$?
+  expect_code 0 "$rc" "a lapsed conn must not change the action"$'\n'"$out"
+  assert_not_contains "$out" "captain has the conn" \
+    "a lapsed conn must stop producing the notice"
+  pass "fm-control: a lifecycle action on a conn-held task warns loudly and still runs"
+}
+
 # A recorded harness can carry a raw launch command's basename, so the tables
 # are reached through one prefix rule rather than an exact string match.
 test_harness_family_resolution() {
@@ -875,6 +902,7 @@ test_fm_send_still_marks_the_same_secondmate_task() {
 
 test_exit_types_each_harness_verified_command
 test_interrupt_sends_each_harness_verified_key
+test_conn_notice_is_advisory_on_the_lifecycle_plane
 test_opencode_interrupts_twice_and_others_once
 test_unverified_harness_is_refused
 test_harness_family_resolution

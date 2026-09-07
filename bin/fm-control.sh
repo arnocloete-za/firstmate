@@ -71,6 +71,12 @@
 # A remotely placed secondmate is refused by name: its agent runs on another
 # host, so no postcondition this plane verifies could be read for it here.
 #
+# A task the captain is working in himself gets a loud stderr advisory naming
+# the conn (bin/fm-conn-lib.sh) and the action still runs: an interrupt cancels
+# a turn he is waiting on and a relaunch discards the conversation he is
+# having, but he may have asked for exactly that, so this plane gains no new
+# way to refuse.
+#
 # Fail-closed boundaries:
 #   - An unverified harness, or a harness whose control mechanics are unknown,
 #     is refused rather than guessed at.
@@ -310,6 +316,20 @@ fm_control_harness_supported "$HARNESS" \
   || die "task $ID records harness '${RECORDED_HARNESS:-none}', which has no verified control mechanics; fm-control refuses to guess an interrupt key or exit command"
 
 fm_backend_validate "$BACKEND" || exit 1
+
+# Captain-at-the-conn advisory. While the captain is working in this task's own
+# terminal, an interrupt cancels a turn he is waiting on and a relaunch throws
+# away the conversation he is having, so a lifecycle action here is far more
+# disruptive than a steer (AGENTS.md hard rule 4 and section 8). It stays an
+# advisory for the same reason bin/fm-send.sh's is: the captain may have asked
+# for exactly this action, and no verified lifecycle plane should acquire a new
+# way to refuse. The flag's bounded expiry means it cannot nag about a terminal
+# he has left (bin/fm-conn-lib.sh).
+# shellcheck source=bin/fm-conn-lib.sh
+. "$SCRIPT_DIR/fm-conn-lib.sh"
+if CONN_LABEL=$(fm_conn_label "$STATE" "$ID"); then
+  echo "notice: $ID - $CONN_LABEL. Supervision is standing off this task because the captain is working in it directly; unless he asked for this action, an interrupt or relaunch here cancels or discards the conversation he is having." >&2
+fi
 
 # --- shared helpers ---------------------------------------------------------
 

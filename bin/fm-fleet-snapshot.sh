@@ -44,6 +44,12 @@
 #     fm-classify-lib.sh's authoritative status_open_decisions fold and reconciled
 #     against current_state; hints.pending_decision and hints.blocked_event are
 #     booleans derived from that set.
+#     conn is {held,age_seconds}: whether the captain is working in that task's
+#     own terminal right now, and for how long. Read from bin/fm-conn-lib.sh,
+#     which owns the flag and its bounded expiry, so a lapsed or unusable
+#     record reads as not held. It is orthogonal to current_state - a task
+#     under the conn is being worked and talked about at the same time - and
+#     supervision, not this snapshot, is what stands off such a task.
 #     endpoint.exists is the cheap local backend endpoint-presence read.
 #     endpoint.agent_alive is populated for local secondmates only, where it is
 #     useful return-channel supervision data; remote secondmates use "unknown"
@@ -172,6 +178,9 @@ validate_positive_bound FM_SNAPSHOT_REGISTRY_TIMEOUT "$FM_SNAPSHOT_REGISTRY_TIME
 # shellcheck source=bin/fm-timeout-lib.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/fm-timeout-lib.sh"  # fm_run_timed: the shared hard bound
+# shellcheck source=bin/fm-conn-lib.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/fm-conn-lib.sh"  # fm_conn_age: the captain-at-the-conn flag
 
 usage() {
   cat <<'EOF'
@@ -227,6 +236,19 @@ command -v jq >/dev/null 2>&1 || { echo "fm-fleet-snapshot: jq not found" >&2; e
 
 bool_json() {
   if [ "$1" = 1 ]; then printf 'true'; else printf 'false'; fi
+}
+
+# The captain-at-the-conn fact for one task, read from its owner rather than
+# parsed back out of the current-state prose. Only a HELD flag carries an age;
+# a lapsed, absent, or unusable record is simply not held, because
+# bin/fm-conn-lib.sh fails toward supervision.
+conn_json() {  # <task-id>
+  local age
+  if age=$(fm_conn_age "$STATE" "$1"); then
+    jq -n --argjson age "$age" '{held:true,age_seconds:$age}'
+  else
+    jq -n '{held:false,age_seconds:null}'
+  fi
 }
 
 path_present_json() {  # <path>
@@ -604,6 +626,7 @@ task_json_lines() {
       --argjson pending_decision "$(bool_json "$pending_decision")" \
       --argjson blocked_event "$(bool_json "$blocked_event")" \
       --argjson report_present "$(bool_json "$report_present")" \
+      --argjson conn "$(conn_json "$id")" \
       '{
         id:$id,
         kind:$kind,
@@ -623,6 +646,7 @@ task_json_lines() {
         },
         secondmate_projects:($projects | if . == "" then [] else split(",") | map(gsub("^[[:space:]]+|[[:space:]]+$"; "")) | map(select(. != "")) end),
         current_state:($current_state + {observed_at:$observed_at,freshness:"fresh"}),
+        conn:$conn,
         endpoint:{target:($target | if . == "" then null else . end),exists:$endpoint_exists,agent_alive:$agent_alive,
           status:(if $endpoint_exists == false then "absent"
                   elif $agent_alive == "alive" or $agent_alive == "dead" then $agent_alive

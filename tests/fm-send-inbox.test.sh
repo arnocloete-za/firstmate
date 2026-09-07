@@ -132,6 +132,35 @@ test_text_steer_rides_inbox() {
   pass "fm-send inbox: the payload is recorded durably and only the doorbell is typed"
 }
 
+# While the captain is working in a task's own terminal, a steer arriving from
+# firstmate is how the two of them end up pulling one worker in two directions.
+# Deliberately an ADVISORY rather than a refusal: steering is the path a real
+# blocker depends on, and the captain himself may ask for the message, so the
+# steer must still be delivered in full while the notice says loudly what is
+# happening. It must also stay quiet once the flag lapses.
+test_conn_notice_is_advisory_not_a_refusal() {
+  local dir err rc
+  dir=$(setup_case conn-notice); err="$dir/send.err"
+  date +%s > "$dir/home/state/t1.conn"
+
+  run_send "$dir" "$err" -- t1 "please rebase onto main"; rc=$?
+  expect_code 0 "$rc" "a conn-held task must still accept a steer"
+  [ -f "$dir/home/state/t1.inbox/001.msg" ] \
+    || fail "the conn notice suppressed the steer instead of merely warning about it"
+  assert_contains "$(cat "$err")" "captain has the conn" \
+    "fm-send must name the conn on stderr when it steers a task the captain is in"
+  assert_contains "$(cat "$err")" "standing off this task" \
+    "the notice must say what the conn means for supervision"
+
+  dir=$(setup_case conn-notice-lapsed); err="$dir/send.err"
+  printf '%s\n' "$(( $(date +%s) - 100000 ))" > "$dir/home/state/t1.conn"
+  run_send "$dir" "$err" -- t1 "please rebase onto main"; rc=$?
+  expect_code 0 "$rc" "a lapsed conn must not change the steer"
+  assert_not_contains "$(cat "$err")" "captain has the conn" \
+    "a lapsed conn must stop producing the notice"
+  pass "fm-send: a steer onto a conn-held task warns loudly and is still delivered"
+}
+
 test_multiline_steer_is_legal() {
   local dir err rc body
   dir=$(setup_case multiline); err="$dir/send.err"
@@ -339,6 +368,7 @@ test_unwritable_inbox_fails_loudly() {
 }
 
 test_text_steer_rides_inbox
+test_conn_notice_is_advisory_not_a_refusal
 test_multiline_steer_is_legal
 test_resend_enqueues_new_sequence
 test_pending_composer_skips_ring_advisorily

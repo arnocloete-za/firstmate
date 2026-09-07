@@ -45,7 +45,9 @@
 #                       represented by the two digests below.
 #   6. fleet digest   - a compact data/backlog.md identity/metadata listing,
 #                       every state/*.meta, a bounded state/*.status tail,
-#                       state/.afk, and a cheap per-task endpoint-liveness read:
+#                       state/.afk, a cheap per-task endpoint-liveness read,
+#                       and, for a task the captain is working in himself, the
+#                       conn line beside that endpoint (bin/fm-conn-lib.sh):
 #                       read-only, always runs.
 #   7. network checks - the result of the deferred network stage started back at
 #                       step 1, harvested WITHOUT waiting for it.
@@ -341,6 +343,8 @@ PRIMARY_HARNESS=$("$SCRIPT_DIR/fm-harness.sh" 2>/dev/null || printf unknown)
 . "$SCRIPT_DIR/fm-wake-lib.sh"
 # shellcheck source=bin/fm-line-cap-lib.sh
 . "$SCRIPT_DIR/fm-line-cap-lib.sh"
+# shellcheck source=bin/fm-conn-lib.sh
+. "$SCRIPT_DIR/fm-conn-lib.sh"
 
 # One tasks-axi compatibility verdict per session start. The probe costs three
 # tasks-axi subprocesses and this digest needs the same answer twice - here for
@@ -829,6 +833,15 @@ for meta in "$STATE"/*.meta; do
     fi
   else
     printf 'endpoint: unknown (no window recorded)\n'
+  fi
+
+  # The captain working in this task's own terminal, printed right beside its
+  # endpoint so a recovering session never mistakes a worker mid-conversation
+  # with him for a stuck one, and never leaves a task quietly unsupervised
+  # either. Silent when nothing holds the conn. bin/fm-conn-lib.sh owns the
+  # flag, the phrase, and its bounded expiry.
+  if CONN_LABEL=$(fm_conn_label "$STATE" "$id"); then
+    printf '%s - supervision is standing off this task; it lapses on its own\n' "$CONN_LABEL"
   fi
 
   status="$STATE/$id.status"

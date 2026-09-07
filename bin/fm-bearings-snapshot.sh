@@ -29,6 +29,13 @@
 # gate with its date; a row the canonical snapshot marks prose-deferred
 # (deferred_marker) leaves the default decisions and gates views and is
 # disclosed in omitted[], revealed by --all-decisions / --all-queued.
+# conn lists every task the captain is working in himself, with how long he has
+# held that terminal, so a bearings read can never mistake a worker in the
+# middle of a conversation with him for a stuck one, and can never lose track of
+# a task supervision is deliberately standing off. It is its own array rather
+# than an Underway column because the flag is authoritative only for this home's
+# own tasks: bin/fm-conn-lib.sh owns it, and a secondmate's children are
+# supervised inside that mate's own home. An empty array is the normal case.
 # Underway (in_flight) projects every main live worker plus every active child
 # from every readable secondmate ledger, independently of that home's
 # bearings_state. A home classified captain_decision because it has an open
@@ -120,7 +127,8 @@ Default collection performs bounded concurrent remote-ledger reads for registere
 remote homes under one shared snapshot budget and may refresh the parent-side cache.
 --include-prs additionally performs live GitHub discovery and checks.
 
-Default fields: schema, home, generated, prs, in_flight{id,kind,state,repo,doing},
+Default fields: schema, home, generated, prs, conn{id,age_seconds},
+  in_flight{id,kind,state,repo,doing},
   secondmates{id,state,doing,provenance,freshness,age_seconds,contradiction,reason},
   secondmate_reconcile{id,spawn_gen,host,kind,ids},
   decisions_open{id,key,verb,summary,owner}, landed{id,what,artifact,owner},
@@ -465,6 +473,8 @@ MODEL=$(printf '%s' "$SNAP" | jq \
       home: $home,
       generated: $now,
       prs: $prs,
+      conn: [ .tasks[] | select((.conn.held // false) == true)
+              | {id, age_seconds:.conn.age_seconds} ],
       in_flight: (if $all_in_flight == 1 then $in_flight_all else $in_flight_all[:$in_flight_n] end),
       secondmates: (if $all_secondmates == 1 then $secondmates_all else $secondmates_all[:$secondmates_n] end),
       secondmate_reconcile: [ (.secondmate_current.records // [])[]

@@ -23,6 +23,9 @@
 #      pane, stays silent on a healthy/empty inbox, surfaces unwritable ladder
 #      bookkeeping only while its record remains unhandled, and emits exactly
 #      one stale wake once the ring budget is spent.
+#   6. A task the captain has the conn on (bin/fm-conn-lib.sh) is stood off
+#      entirely - no doorbell, no wake - and the same aged record resumes its
+#      ladder once the flag lapses, so the stand-off defers rather than drops.
 set -u
 
 # shellcheck source=tests/wake-helpers.sh
@@ -522,6 +525,43 @@ test_watcher_escalates_once_after_budget() {
   pass "watcher: a spent ring budget emits exactly one ordinary stale wake for recovery"
 }
 
+# While the captain holds a task's terminal, the watcher must not re-ring that
+# task's instructions: a doorbell typed into a pane he is conversing in is the
+# second-supervisor interleaving the conn exists to prevent. The deferral is
+# bounded by the flag's own expiry, and the SAME aged record must resume its
+# ladder once the conn lapses - otherwise the stand-off would silently swallow
+# an instruction rather than hold it.
+test_watcher_stands_off_a_task_the_captain_holds() {
+  local dir state out log pid rec
+  dir=$(setup_watch_case conn-standoff)
+  state="$dir/state"; out="$dir/watch.out"; log="$dir/send.log"; : > "$log"
+  rec=$(inbox_lib "$state" fm_task_inbox_write "$state" t1 "please continue")
+  age_path "$rec"
+  date +%s > "$state/t1.conn"
+  watch_bg "$state" "$dir/fakebin" "$out" \
+    FM_SEND_LOG="$log" FM_FAKE_TMUX_CAPTURE="$(idle_capture "$dir")" \
+    FM_TASK_INBOX_RING_MAX=1
+  pid=$!
+  sleep 4
+  [ ! -s "$log" ] \
+    || { kill "$pid" 2>/dev/null; fail "the watcher rang a task the captain has the conn on:"$'\n'"$(cat "$log")"; }
+  [ ! -s "$state/.wake-queue" ] \
+    || { kill "$pid" 2>/dev/null; fail "the stand-off queued a wake:"$'\n'"$(cat "$state/.wake-queue")"; }
+  kill -0 "$pid" 2>/dev/null \
+    || fail "the stand-off must not wake firstmate (watcher exited):"$'\n'"$(cat "$out")"
+
+  # The captain leaves: the flag lapses and the very same record resumes its
+  # ladder, so nothing was dropped.
+  printf '%s\n' "$(( $(date +%s) - 100000 ))" > "$state/t1.conn"
+  wait_watcher_gone "$pid" \
+    || { kill "$pid" 2>/dev/null; fail "a lapsed conn did not return the task to ordinary supervision"; }
+  grep -qF 'Firstmate instruction waiting' "$log" \
+    || fail "the deferred instruction was never rung after the conn lapsed:"$'\n'"$(cat "$log")"
+  grep -qF 'unread firstmate instruction' "$state/.wake-queue" \
+    || fail "the deferred instruction never escalated after the conn lapsed:"$'\n'"$(cat "$state/.wake-queue" 2>/dev/null)"
+  pass "watcher: a task the captain has the conn on is stood off, and its instruction resumes the ladder once the conn lapses"
+}
+
 test_write_is_durable_and_exact
 test_idempotent_write_dedups_exact_body
 test_idempotent_write_follows_concurrent_ack
@@ -537,3 +577,4 @@ test_watcher_quiet_on_healthy_inbox
 test_watcher_ack_silences_unwritable_ladder
 test_watcher_surfaces_unwritable_ladder
 test_watcher_escalates_once_after_budget
+test_watcher_stands_off_a_task_the_captain_holds

@@ -381,6 +381,73 @@ test_ship_project_memory_wording() {
   pass "fm-brief.sh: ship project-memory wording carries the AGENTS.md authoring bar"
 }
 
+# The worker's side of AGENTS.md hard rule 4, which splits by DIRECTION: never
+# initiate contact with the captain, but converse with him when he is present
+# in this worker's own terminal. Every scaffold kind must carry it, from ONE
+# wording, and it must carry the two records that make the arrangement safe -
+# the durable echo of what he settled and the flag that stands supervision off
+# the task - because a ruling given in a terminal has to survive that terminal.
+test_captain_pane_contract_reaches_every_scaffold() {
+  local home brief kind
+  home="$TMP_ROOT/captain-pane-home"
+  mkdir -p "$home/data"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" pane-ship some-proj --mode no-mistakes >/dev/null 2>&1
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" pane-scout some-proj --scout >/dev/null 2>&1
+  FM_HOME="$home" FM_SECONDMATE_CHARTER='Handle routed domain work.' \
+    "$ROOT/bin/fm-brief.sh" pane-mate --secondmate --no-projects >/dev/null 2>&1
+
+  for kind in pane-ship pane-scout pane-mate; do
+    brief="$home/data/$kind/brief.md"
+    assert_present "$brief" "$kind brief was not scaffolded"
+    assert_grep "# The captain in your pane" "$brief" \
+      "$kind brief lost the captain-pane section"
+    assert_grep "An unmarked human message in this pane is the captain himself" "$brief" \
+      "$kind brief did not identify an unmarked message as the captain"
+    assert_grep "converse normally and in full sentences" "$brief" \
+      "$kind brief did not require ordinary conversation rather than status shorthand"
+    assert_grep "Never initiate contact with him, and never try to reach him anywhere else" "$brief" \
+      "$kind brief lost the never-initiate half of the rule"
+    assert_grep "His instruction is authoritative" "$brief" \
+      "$kind brief did not make a captain instruction authoritative"
+    assert_grep "say so plainly in the pane and let him decide. Never silently obey and never silently refuse." "$brief" \
+      "$kind brief lost the name-the-conflict rule"
+    assert_grep "His presence is never by itself authority to skip validation, merge, or take a destructive action" "$brief" \
+      "$kind brief let the captain's mere presence authorize a skip, merge, or destructive action"
+    # The durable echo, and the keyed close that stops firstmate re-asking a
+    # question the captain already answered.
+    assert_grep "echo \"note: captain in the pane:" "$brief" \
+      "$kind brief lost the durable echo of what the captain settled"
+    assert_grep "$home/state/$kind.status" "$brief" \
+      "$kind brief's durable echo must name that task's own status file"
+    assert_grep "echo \"resolved [key={the key you opened}]: captain in the pane:" "$brief" \
+      "$kind brief lost the keyed close for a decision the captain answered in the pane"
+    assert_grep "Nothing else closes it" "$brief" \
+      "$kind brief did not say that only the keyed close closes the decision"
+    # The stand-off flag, refreshed on EVERY message because it expires.
+    assert_grep "date +%s > '$home/state/$kind.conn'" "$brief" \
+      "$kind brief lost the exact conn write command"
+    assert_grep "on his FIRST message and again on EVERY later one" "$brief" \
+      "$kind brief did not require a refresh on every captain message"
+    assert_grep "It lapses on its own once he stops typing" "$brief" \
+      "$kind brief did not state that the conn expires"
+  done
+
+  # One owner: the mate charter points at the shared section instead of keeping
+  # its own divergent copy of the unmarked-message rule.
+  brief="$home/data/pane-mate/brief.md"
+  assert_grep "the captain section below owns everything about that case" "$brief" \
+    "the secondmate charter kept a second wording of the unmarked-message rule"
+  assert_no_grep "stay conversational exactly as you would for any captain message" "$brief" \
+    "the secondmate charter retained its superseded standalone wording"
+  # The one phrase that legitimately differs per kind.
+  assert_grep "where it differs from the charter above or a request routed to you" "$brief" \
+    "the secondmate charter must name what a captain instruction outranks there"
+  assert_grep '## Firstmate spec` above' "$home/data/pane-ship/brief.md" \
+    "a ship brief must name the Firstmate spec as what a captain instruction outranks"
+
+  pass "fm-brief.sh: every scaffold carries one captain-pane contract, its durable echo, and the conn refresh"
+}
+
 test_herdr_lab_contract_is_explicit_and_complete() {
   local home id brief
   home="$TMP_ROOT/herdr-lab-home"
@@ -792,6 +859,7 @@ test_delivery_flags_are_refused_where_they_do_not_apply
 test_faster_paths_use_configured_authority_without_stacked_review
 test_no_mistakes_dod_wording
 test_ship_project_memory_wording
+test_captain_pane_contract_reaches_every_scaffold
 test_herdr_lab_contract_is_explicit_and_complete
 test_herdr_lab_contract_quotes_foreign_firstmate_path
 test_herdr_lab_omission_is_loud_for_ship_and_scout
