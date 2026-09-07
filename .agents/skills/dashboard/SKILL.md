@@ -22,8 +22,11 @@ ordinary bearings side effects and the dashboard's own generated files under
 a checkout.
 The one exception is launching: clicking a project card's "Run" control, when
 that project has a registered run script, starts that script in a local tmux
-session named `dashboard` (created if it does not already exist), in a new
-window named after the project - see step 3.
+session named `dashboard` (created if it does not already exist), in a window
+named after the project.
+Clicking Run again for a project that already has such a window never kills,
+replaces, or duplicates it - that window may be real work still running, so
+Run only brings it to focus and creates nothing new - see step 3.
 
 ## What it does
 

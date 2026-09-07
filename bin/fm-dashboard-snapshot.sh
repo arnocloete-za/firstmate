@@ -24,7 +24,11 @@
 #
 # One more optional phrase in the same description uses the same reading
 # convention, captured up to the next space, ";", or end of line (so a path
-# containing a space is truncated, exactly as for the clone-path phrase):
+# containing a space is truncated, exactly as for the clone-path phrase). Its
+# path must be absolute to be read at all: the capture is anchored to a
+# leading "/", so prose that happens to contain the words ("no run script at
+# present") yields no run script rather than a bogus one, and no Run control
+# is offered for it:
 #   "run script at <ABSOLUTE_PATH>" - a local script that runs this project;
 #     when present, the /dashboard page offers a "Run" control that launches
 #     it (bin/fm-dashboard-server.py owns the launch mechanics). Absent for
@@ -185,7 +189,7 @@ resolve_path() {
 # phrase's path, or nothing when absent. See the header comment above.
 resolve_run_script() {
   printf '%s\n' "$1" \
-    | grep -oE 'run script at [^ ;]+' \
+    | grep -oE 'run script at /[^ ;]*' \
     | head -n1 \
     | sed 's/^run script at //'
 }

@@ -7,7 +7,8 @@
 # last-commit fields, the bounded commit list, default-branch resolution via
 # both origin/HEAD and the local main/master fallback, the on_default flag,
 # the unavailable-project path for a registry entry whose clone is missing,
-# and the embedded "run script at <PATH>" phrase (present, absent, and on an
+# and the embedded "run script at <ABSOLUTE_PATH>" phrase (present, absent,
+# ignored when it is only prose rather than a path, and on an
 # unavailable project).
 set -u
 
@@ -98,13 +99,14 @@ cat > "$FM_ROOT_OVERRIDE/data/projects.md" <<EOF
 - proj-ghost - never cloned (added 2026-01-01)
 - proj-runnable - has a run script registered; run script at $RUN_SCRIPT (added 2026-01-01)
 - proj-plain - has no run script registered (added 2026-01-01)
+- proj-prose - runs from cron; no run script at present (added 2026-01-01)
 EOF
 
 OUT=$("$SNAPSHOT")
 echo "$OUT" | jq -e '.schema == "fm-dashboard-snapshot.v1"' >/dev/null \
   || fail "wrong schema tag: $OUT"
-echo "$OUT" | jq -e '.projects | length == 9' >/dev/null \
-  || fail "expected 9 projects, got: $(echo "$OUT" | jq '.projects | length')"
+echo "$OUT" | jq -e '.projects | length == 10' >/dev/null \
+  || fail "expected 10 projects, got: $(echo "$OUT" | jq '.projects | length')"
 pass "snapshot carries the fm-dashboard-snapshot.v1 schema and every registered project"
 
 proj() {  # <name> -> that project's JSON object
@@ -166,6 +168,13 @@ pass "the embedded 'run script at <PATH>' phrase resolves run_script"
 proj proj-plain | jq -e '.run_script == null' >/dev/null \
   || fail "proj-plain should have no run_script: $(proj proj-plain)"
 pass "a project with no phrase reports run_script as null"
+
+# The phrase is only read when it carries an absolute path. Prose that merely
+# contains the words ("no run script at present") must not resolve to the next
+# token, or the board would offer a Run control that can only ever fail.
+proj proj-prose | jq -e '.run_script == null' >/dev/null \
+  || fail "proj-prose's prose should not resolve to a run_script: $(proj proj-prose)"
+pass "the phrase is ignored unless it carries an absolute path"
 
 proj proj-ghost | jq -e '.run_script == null' >/dev/null \
   || fail "an unavailable project should still carry a null run_script field: $(proj proj-ghost)"

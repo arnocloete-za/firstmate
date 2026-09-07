@@ -58,6 +58,20 @@ if [ "$PHASE" = "parent" ]; then
   PARENT_TMUX=$(command -v tmux 2>/dev/null || true)
   CANARY="fm-dashboard-canary-$$"
   CANARY_SOCKET=
+  canary_cleanup() {
+    [ -n "$PARENT_TMUX" ] \
+      && "$PARENT_TMUX" -L default kill-session -t "=$CANARY" >/dev/null 2>&1
+    fm_test_cleanup
+  }
+  # Armed before the canary exists, so no path can create it without owning
+  # its teardown, and the signal handlers exit the way tests/lib.sh's do.
+  # A handler that fell through instead would let a Ctrl-C kill the canary
+  # itself and then resume into the proof below, which would report the
+  # suite as having destroyed a tmux server it never touched.
+  trap canary_cleanup EXIT
+  trap 'canary_cleanup; exit 130' INT
+  trap 'canary_cleanup; exit 143' TERM
+
   if [ -n "$PARENT_TMUX" ]; then
     "$PARENT_TMUX" -L default new-session -d -s "$CANARY" -n keepalive 'sleep 600' \
       >/dev/null 2>&1 || true
@@ -66,15 +80,13 @@ if [ "$PHASE" = "parent" ]; then
   fi
   if [ -z "$CANARY_SOCKET" ]; then
     echo "notice: no canary session could be parked on the default tmux socket; running the suite without the blast-radius proof"
-    FM_DASHBOARD_SERVE_PHASE=standalone exec bash "$0"
+    # exec replaces this shell, so the EXIT trap never runs - tear down here.
+    canary_cleanup
+    FM_DASHBOARD_SERVE_PHASE=standalone FM_TEST_SKIP_ORPHAN_REAP=1 exec bash "$0"
   fi
-  canary_cleanup() {
-    "$PARENT_TMUX" -L default kill-session -t "=$CANARY" >/dev/null 2>&1 || true
-    fm_test_cleanup
-  }
-  trap canary_cleanup EXIT INT TERM
 
-  FM_DASHBOARD_SERVE_PHASE=supervised TMUX="$CANARY_SOCKET,0,0" bash "$0"
+  FM_DASHBOARD_SERVE_PHASE=supervised FM_TEST_SKIP_ORPHAN_REAP=1 \
+    TMUX="$CANARY_SOCKET,0,0" bash "$0"
   CHILD_RC=$?
 
   "$PARENT_TMUX" -L default has-session -t "=$CANARY" 2>/dev/null \
@@ -502,9 +514,11 @@ else
   WINDOW_COUNT=$(dashboard_window_ids runtest | grep -c .)
   [ "$WINDOW_COUNT" = "1" ] \
     || fail "expected exactly one 'runtest' window after a second /run, found $WINDOW_COUNT"
-  [ "$(active_dashboard_window)" = "runtest" ] \
-    || fail "a second /run should select the existing window rather than leaving it unfocused, active was $(active_dashboard_window)"
-  pass "a second /run for the same project selects the existing window without killing or duplicating it"
+  # Focus is deliberately not asserted here: this session holds exactly one
+  # window, which tmux always reports as active, so the check would pass even
+  # if nothing were selected. The dotted-name case below de-focuses first and
+  # proves it for real.
+  pass "a second /run for the same project leaves the existing window and its process intact instead of duplicating them"
 
   # Same guarantee for a project name containing a ".": a
   # "dashboard:run.test" target parses "test" as a pane and fails, so the

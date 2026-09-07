@@ -30,10 +30,13 @@ tmux prefix-matches bare session names, so a bare "dashboard" target can land
 in an unrelated session like "dashboard-notes", and a window name containing
 "." or ":" parses as a pane/window suffix rather than as the name.
 
-POST /run only answers same-origin requests from the served page itself. It
-requires a JSON content type and rejects any request whose Sec-Fetch-Site or
-Origin says it came from somewhere else, so another page the captain has open
-cannot use the loopback port to launch a run script behind their back.
+POST /run is closed to other pages the captain has open, though not to local
+non-browser clients, which send neither header and are served: it requires an
+"application/json" content type, which a cross-origin page cannot set without
+a preflight this server answers 501 to, and it rejects any request whose
+Sec-Fetch-Site or Origin does name a different origin, which is what catches a
+same-origin-looking DNS rebind. So no cross-origin page can reach it, and
+curl on the captain's own machine still can.
 
 The request body carries only a project name, never a path or command. The
 name is resolved against the fm-dashboard-snapshot.v1 payload embedded in
@@ -64,6 +67,11 @@ DATA_SLOT_RE = re.compile(
 SESSION = "dashboard"
 SESSION_TARGET = "=" + SESSION
 LAUNCH_LOCK = threading.Lock()
+# A tmux client blocks forever on a socket whose server is alive but wedged
+# (SIGSTOPed or thrashing): connect() succeeds and the read never returns.
+# Every tmux call below runs while LAUNCH_LOCK is held, so an unbounded one
+# would strand the lock and leave every later Run stuck on "..." for good.
+TMUX_TIMEOUT = 10
 
 
 class Handler(http.server.SimpleHTTPRequestHandler):
@@ -165,12 +173,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 stderr=subprocess.DEVNULL,
                 check=False,
                 text=True,
+                timeout=TMUX_TIMEOUT,
             )
             if existing.returncode != 0:
                 subprocess.run(
                     ["tmux", "new-session", "-d", "-s", SESSION,
                      "-n", name, "-c", path, run_script],
                     check=True,
+                    timeout=TMUX_TIMEOUT,
                 )
                 return
             # tmux allows more than one window with the same name in a
@@ -182,11 +192,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             for line in existing.stdout.splitlines():
                 window_id, _, window_name = line.partition("\t")
                 if window_name == name:
-                    subprocess.run(["tmux", "select-window", "-t", window_id], check=True)
+                    subprocess.run(
+                        ["tmux", "select-window", "-t", window_id],
+                        check=True,
+                        timeout=TMUX_TIMEOUT,
+                    )
                     return
             subprocess.run(
                 ["tmux", "new-window", "-t", SESSION_TARGET, "-n", name, "-c", path, run_script],
                 check=True,
+                timeout=TMUX_TIMEOUT,
             )
 
     def _respond_json(self, code, obj):
