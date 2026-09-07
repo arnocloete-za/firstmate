@@ -16,6 +16,14 @@
 #   - <name> [<mode>] - <desc> (added <date>)          -> <mode> off
 #   - <name> [<mode> +yolo] - <desc> (added <date>)    -> <mode> on
 #
+# The annotation bracket is an optional <mode> followed by zero or more `+flag`
+# tokens, in any order. This script reads `+yolo` and ignores every other flag
+# rather than mistaking it for a mode, so another consumer can carry its own
+# orthogonal per-project flag in the same bracket without a second annotation
+# slot and without changing what posture resolves here. `+personal` is one such
+# flag: it selects which /dashboard board a project appears on, and
+# bin/fm-dashboard.mjs's header owns what it means.
+#
 # Registered modes:
 #   no-mistakes            full pipeline -> PR -> configured merge authority (default)
 #   direct-PR              push + PR via gh-axi, no pipeline
@@ -73,7 +81,7 @@ parsed=$(awk -v n="$NAME" '
       for (i=3; i<=NF; i++) { s = s (s==""?"":" ") $i; if ($i ~ /\]$/) break }
       gsub(/^\[|\]$/, "", s);           # strip the surrounding brackets
       k = split(s, a, " ");
-      if (a[1] != "" && a[1] != "+yolo") mode = a[1];
+      if (a[1] != "" && a[1] !~ /^\+/) mode = a[1];
       for (j=1; j<=k; j++) if (a[j]=="+yolo") yolo="on";
     }
     print mode, yolo; exit

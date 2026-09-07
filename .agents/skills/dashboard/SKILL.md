@@ -1,12 +1,12 @@
 ---
 name: dashboard
 description: >-
-  Generate one local HTML page showing the work running right now beside every
-  registered project's git health.
+  Generate one local HTML page showing the work running right now beside the git
+  health of the projects on the captain's work board.
   Use when the captain invokes /dashboard or asks for a visual fleet/project
-  status board, a dashboard of registered projects, which task terminals are
-  open or which one is waiting on him, or "what needs attention across my
-  projects".
+  status board, a dashboard of his projects, which task terminals are open or
+  which one is waiting on him, or "what needs attention across my projects".
+  For his personal projects, use /dashboard-personal instead.
 user-invocable: true
 metadata:
   internal: true
@@ -15,8 +15,13 @@ metadata:
 # dashboard
 
 `/dashboard` shows the captain state and does nothing else.
-One command generates one static page: the work running right now, and every
-registered project's git health.
+One command generates one static page: the work running right now, and the git
+health of the projects on his work board.
+
+Its companion is [`/dashboard-personal`](../dashboard-personal/SKILL.md), the
+same page for the personal projects he keeps off this one.
+Both are thin callers of one generator with a different board selected, so keep
+any change here a change to that generator rather than to one board.
 
 It is display only.
 The page has no server, no endpoint, and no button; nothing on it can start,
@@ -28,7 +33,8 @@ watch mode, the one sibling file it reads, both under `$FM_HOME/.dashboard/`.
 
 1. **Generate the page.**
    Run `bin/fm-dashboard.mjs`.
-   Its header owns the exact arguments, output path, and read-only contract.
+   Its header owns the exact arguments, the board table, the output path, and
+   the read-only contract.
    It reads this home's registered projects and the canonical fleet snapshot
    concurrently, so the whole command costs about what the fleet read alone
    costs.
@@ -76,16 +82,32 @@ not the warm nautical chrome used for captain-facing surfaces like the bearings
 board.
 Do not restyle it toward that design system without an explicit captain request.
 
-It stays ONE page at one command and one location.
+Each board stays ONE page at one command and one location.
 The captain's complaint that produced the live half was being lost between
-places, so an extra surface makes it worse; restructure the page if it needs to
-hold more, but do not split it.
+places, so a board that spills into extra surfaces makes it worse; restructure
+a board if it needs to hold more, but do not split it.
 
-Projects are numbered in **registry order**, and that number is the captain's
-handle for the project - he reads it aloud to name one.
-So the board never sorts worst-first: a number that moved when a project's
-status changed would be worse than no number at all.
+There are exactly two boards because the captain's work and his own personal
+projects are separate parts of his life that he reads at separate times - not
+because a board ran out of room.
+So that rule is not a licence to add a third for some other cut of the same
+projects: a cut he has to recombine in his head is the lostness the one-page
+rule exists to prevent.
+Which board a project is on is registry state (below), and only he moves one.
+
+The two boards are one page's worth of code: `--group` selects the board, and
+the generator's board table is where a board is defined.
+Never fork the generator or the template for a board - two copies drift the
+first time only one is changed, and "the same page for my personal projects" is
+what he actually asked for.
+
+Projects are numbered in **registry order within their own board**, and that
+number is the captain's handle for the project - he reads it aloud to name one.
+So a board never sorts worst-first: a number that moved when a project's status
+changed would be worse than no number at all.
 Attention shows as color instead.
+Numbering is per board, so a project's number is its position among the
+projects he sees beside it, and moving a project between boards renumbers both.
 
 Every project card is a fixed size, and the last five commits appear on hover in
 an overlay, so the grid cannot reflow and hovering cannot resize a card.
@@ -99,6 +121,11 @@ Only those four wear the loud "waiting on you" treatment, because a badge that
 also fires on ambiguity stops meaning anything.
 Below them sit a run at its own review gate, a declared external wait, a task he
 personally has the conn on, and ordinary work with nothing owed.
+
+A task appears on the board its project is on, so a board shows the work on the
+projects it shows and nothing else.
+A task whose project is not registered at all stays on the work board rather
+than disappearing from every board.
 
 Rows speak in the captain's nouns per `AGENTS.md` section 9 - "stopped for a
 decision it cannot make itself", never "parked at fix_review".
@@ -120,6 +147,21 @@ own age, keeps recomputing it while the tab stays open, and past ten minutes say
 plainly not to walk into a terminal on the strength of it.
 If he wants current state, the answer is to re-run `/dashboard`, or to leave a
 watch running (above) so the re-running happens for him.
+
+## Which projects are on this board
+
+A project is on the work board unless its `data/projects.md` entry marks it onto
+another one, so this board is also the fallback: an unmarked project shows up
+here.
+`+personal` in a project's annotation bracket moves it to
+`/dashboard-personal`; `bin/fm-project-mode.sh`'s header owns that line's
+format and `bin/fm-dashboard.mjs`'s header owns what the marker means.
+
+Moving a project between boards is that one-line registry edit and it is the
+captain's call - never reassign a project's board on your own.
+Because unmarked means work, a marker that is missing or misspelled leaves a
+project visible here rather than on no board at all: if he reports a project
+missing from both boards, suspect its registry line before the page.
 
 ## When something looks unavailable
 

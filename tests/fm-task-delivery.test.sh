@@ -404,6 +404,9 @@ test_project_mode_maps_the_conditional_policy() {
 - yoloproj [no-mistakes-prod-only +yolo] - fixture (added 2026-01-01)
 - flatproj [direct-PR] - fixture (added 2026-01-01)
 - typoproj [no-mistakez] - fixture (added 2026-01-01)
+- flagproj [direct-PR +personal] - fixture (added 2026-01-01)
+- flagonly [+personal] - fixture (added 2026-01-01)
+- bothflags [no-mistakes-prod-only +personal +yolo] - fixture (added 2026-01-01)
 EOF
   out=$(FM_HOME="$home" "$PROJECT_MODE" prodproj 2>/dev/null)
   [ "$out" = "no-mistakes off" ] || fail "conditional policy did not map to its most rigorous leg (got '$out')"
@@ -424,6 +427,26 @@ EOF
   err=$(FM_HOME="$home" "$PROJECT_MODE" typoproj 2>&1 >/dev/null)
   assert_contains "$err" "unknown mode" "a typo'd registry mode stopped warning"
   pass "fm-project-mode: the conditional policy is accepted, mapped for mechanical callers, and readable raw"
+
+  # A flag this script does not read is a flag, not a mode. Another consumer can
+  # carry its own per-project flag in the same bracket (+personal selects a
+  # /dashboard board) without changing, or warning about, the posture here.
+  out=$(FM_HOME="$home" "$PROJECT_MODE" flagproj 2>/dev/null)
+  [ "$out" = "direct-PR off" ] || fail "a foreign annotation flag changed the registered mode (got '$out')"
+  err=$(FM_HOME="$home" "$PROJECT_MODE" flagproj 2>&1 >/dev/null)
+  [ -z "$err" ] || fail "a foreign annotation flag warned as an unknown mode: $err"
+
+  # The same on a line that registers no mode at all: the flag must not be read
+  # as the mode, so the posture is the ordinary default rather than a warning.
+  out=$(FM_HOME="$home" "$PROJECT_MODE" flagonly 2>/dev/null)
+  [ "$out" = "no-mistakes off" ] || fail "a mode-less flag annotation did not resolve to the default (got '$out')"
+  err=$(FM_HOME="$home" "$PROJECT_MODE" flagonly 2>&1 >/dev/null)
+  [ -z "$err" ] || fail "a mode-less flag annotation warned as an unknown mode: $err"
+
+  # Flags compose in any order, and +yolo still has to be read past one.
+  out=$(FM_HOME="$home" "$PROJECT_MODE" bothflags 2>/dev/null)
+  [ "$out" = "no-mistakes on" ] || fail "+yolo was lost beside another annotation flag (got '$out')"
+  pass "fm-project-mode: an annotation flag it does not read is never mistaken for a mode"
 }
 
 # Spawn and promotion refuse leftover Task-subsection placeholders through the

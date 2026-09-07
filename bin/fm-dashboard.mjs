@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-// fm-dashboard.mjs - generate the /dashboard board as one static HTML file.
+// fm-dashboard.mjs - generate one dashboard board as one static HTML file.
 //
-// The dashboard is a read-only display surface: it shows every registered
-// project's git health beside the work running right now, and it does nothing
+// A board is a read-only display surface: it shows the git health of the
+// projects on that board beside the work running on them, and it does nothing
 // else. There is no server, no endpoint, no button, and no path from the page
 // back to the fleet - re-running this command IS the refresh, and --watch is
 // only this command re-running itself until stopped. Node because
@@ -10,15 +10,18 @@
 // no jq/python subprocess per field, and it runs every git read concurrently.
 //
 // Usage:
-//   fm-dashboard.mjs [--fleet-json <file>] [--out <path>] [--open]
-//                    [--watch [--interval <seconds>]]
+//   fm-dashboard.mjs [--group <work|personal>] [--fleet-json <file>]
+//                    [--out <path>] [--open] [--watch [--interval <seconds>]]
+//     --group <name>       which board to render; default work. One generator
+//                          renders every board, so the two can never drift.
 //     --fleet-json <file>  project this already-captured `fm-fleet-snapshot.sh
 //                          --json` output instead of running it again. The
 //                          fleet read dominates this command's wall clock, so
 //                          pass a capture back in when you already have one.
 //                          Under --watch it is re-read every cycle.
-//     --out <path>         write the page here instead of
-//                          $FM_HOME/.dashboard/index.html
+//     --out <path>         write the page here instead of this board's default,
+//                          $FM_HOME/.dashboard/index.html for work and
+//                          $FM_HOME/.dashboard/personal.html for personal
 //     --open               also hand the page to the desktop opener
 //     --watch              keep the page current until stopped (see below)
 //     --interval <seconds> seconds BETWEEN watch cycles; default 30, floor 5,
@@ -26,6 +29,23 @@
 //     -h, --help           usage
 //
 // Prints the written path and its file:// URL on stdout.
+//
+// Boards
+// ------
+// The captain keeps his work and his own personal projects on separate boards,
+// so one board is never a list he has to read past. Which board a project is on
+// is REGISTRY state, not a list in here: an annotation flag `+personal` in its
+// data/projects.md entry puts it on the personal board, and everything else is
+// work. He moves a project between boards by editing that one line.
+//
+// An UNMARKED project is a work project. A marker he has not written yet, or
+// has written wrong, therefore leaves the project on the work board where he
+// can still see it - nothing silently vanishes off both boards.
+//
+// A running task is on the board its project is on. A task whose project is not
+// registered at all stays on the work board, for the same reason.
+//
+// Each board is numbered independently, in registry order within that board.
 //
 // Watch mode
 // ----------
@@ -71,9 +91,10 @@
 // This command never fetches, pulls, commits, steers, tears down, or merges.
 //
 // Project ordering is REGISTRY ORDER, and the number on each card is that
-// project's registry position. The captain reads these numbers aloud, so a
-// number must not move when a project's status changes - that is why the board
-// does not sort worst-first, and why attention shows as color instead.
+// project's position among the projects on ITS OWN board. The captain reads
+// these numbers aloud, so a number must not move when a project's status
+// changes - that is why the board does not sort worst-first, and why attention
+// shows as color instead.
 //
 // Default-branch resolution and terminal presence are not decided here: both
 // shell out to their owners, fm_default_branch() in bin/fm-tangle-lib.sh and
@@ -144,8 +165,30 @@ function die(msg) {
 const DEFAULT_INTERVAL = 30;
 const MIN_INTERVAL = 5;
 
+// Every board this generator can render, and the only place a board differs:
+// which projects it takes, where it writes, what it calls itself, and which
+// command re-runs it. Adding a board is a row here plus its registry marker -
+// never a second generator or a second template, because two copies of this
+// page would drift the first time only one of them was changed.
+//
+// `work` is the fallback board on purpose: it takes every project that is not
+// explicitly marked onto another one, so an unmarked or misspelled marker
+// leaves a project visible rather than dropping it off every board.
+const WORK_GROUP = 'work';
+const BOARDS = {
+  work: { marker: null, page: 'index.html', title: 'Fleet dashboard', command: '/dashboard' },
+  personal: {
+    marker: '+personal', page: 'personal.html', title: 'Personal dashboard', command: '/dashboard-personal',
+  },
+};
+
 const opts = {
-  fleetJson: null, out: null, open: false, watch: false, interval: DEFAULT_INTERVAL,
+  group: WORK_GROUP,
+  fleetJson: null,
+  out: null,
+  open: false,
+  watch: false,
+  interval: DEFAULT_INTERVAL,
 };
 let intervalGiven = false;
 for (let i = 2; i < process.argv.length; i += 1) {
@@ -155,6 +198,16 @@ for (let i = 2; i < process.argv.length; i += 1) {
     if (value === undefined) die(`${arg} requires a value`);
     if (arg === '--fleet-json') opts.fleetJson = value;
     else opts.out = value;
+    i += 1;
+  } else if (arg === '--group') {
+    const value = process.argv[i + 1];
+    if (value === undefined) die('--group requires a value');
+    // Named rather than guessed: a typo would otherwise render some other
+    // board's projects under this board's name.
+    if (!Object.hasOwn(BOARDS, value)) {
+      die(`--group must be one of ${Object.keys(BOARDS).join(', ')}`);
+    }
+    opts.group = value;
     i += 1;
   } else if (arg === '--interval') {
     const value = process.argv[i + 1];
@@ -184,7 +237,8 @@ if (intervalGiven && !opts.watch) die('--interval means nothing without --watch'
 // The page and, under --watch, the one sibling file it reads to notice a
 // change. The sidecar is named after the page so two boards written to
 // different paths can never read each other's stamp.
-const out = opts.out ? resolve(opts.out) : join(FM_HOME, '.dashboard', 'index.html');
+const board = BOARDS[opts.group];
+const out = opts.out ? resolve(opts.out) : join(FM_HOME, '.dashboard', board.page);
 const stampPath = `${out}.watch.js`;
 const stampName = basename(stampPath);
 
@@ -245,6 +299,28 @@ const withinDays = (iso, days) => {
 };
 
 // --- 1. the registry -------------------------------------------------------
+// Which board a project is on is registry state. The marker rides in the same
+// annotation bracket as the registered delivery posture, as a `+` flag beside
+// `+yolo` - that bracket is already where an orthogonal per-project flag goes,
+// and bin/fm-project-mode.sh (the format's owner) reads flags it does not know
+// as flags rather than as a mode.
+//
+// Anchored to the annotation slot right after the name, so a bracket that
+// happens to appear later in the free-form description can never be read as one
+// of these flags.
+const ANNOTATION = /^-\s+\S+\s+\[([^\]]*)\]/;
+
+// Unrecognized annotation, no annotation, unknown marker: all of them mean the
+// work board. Membership of any other board has to be stated, so the failure
+// direction is always "still on the board he reads first".
+function groupOf(line) {
+  const flags = (ANNOTATION.exec(line)?.[1] || '').split(/\s+/).filter(Boolean);
+  for (const [group, { marker }] of Object.entries(BOARDS)) {
+    if (marker && flags.includes(marker)) return group;
+  }
+  return WORK_GROUP;
+}
+
 async function readRegistry() {
   let text;
   try {
@@ -258,7 +334,11 @@ async function readRegistry() {
     const name = line.slice(2).trim().split(/\s+/)[0];
     if (!name) continue;
     const embedded = /clone kept in place at ([^ ;)]+)/.exec(line);
-    projects.push({ name, path: embedded ? embedded[1] : join(FM_HOME, 'projects', name) });
+    projects.push({
+      name,
+      group: groupOf(line),
+      path: embedded ? embedded[1] : join(FM_HOME, 'projects', name),
+    });
   }
   return projects;
 }
@@ -585,7 +665,7 @@ const tick = () => {
     text += Date.now() <= dueBy ? ' \\u00b7 watching' : ' \\u00b7 the watch has stopped';
   }
   const stale = mins >= 10;
-  if (stale) text += ' - too old to walk into a terminal on; re-run /dashboard';
+  if (stale) text += ' - too old to walk into a terminal on; re-run ' + ${js(board.command)};
   el.classList.toggle('stale', stale);
   el.textContent = text;
 };
@@ -742,14 +822,14 @@ function page({ projects, live, generatedAt, observedAt, renderedAt, contentHash
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <meta name="fm-dashboard-content" content="${esc(contentHash)}" />
-<title>Fleet Dashboard</title>
+<title>${esc(board.title)}</title>
 <style>${STYLE}</style>
 </head>
 <body>
 <main>
 <header class="page-head">
-  <h1>Fleet dashboard</h1>
-  <span class="meta">generated ${esc(generatedAt)} · re-run /dashboard to refresh</span>
+  <h1>${esc(board.title)}</h1>
+  <span class="meta">generated ${esc(generatedAt)} · re-run ${esc(board.command)} to refresh</span>
 </header>
 <section class="section">
   <h2>Live work</h2>
@@ -793,12 +873,22 @@ let lastStamp = null;
 async function cycle() {
   const started = Date.now();
   const registry = await readRegistry();
+  // This board's projects, still in registry order, so the number on a card is
+  // its position on THIS board and holds still while other boards change.
+  const mine = registry.filter((project) => project.group === opts.group);
+  // A task is on the board its project is on. The whole registry is consulted,
+  // not just this board's slice, so a project registered onto another board
+  // takes its work with it - and a task whose project is not registered at all
+  // falls through to the work board rather than off every board.
+  const groups = new Map(registry.map((project) => [project.name, project.group]));
+  const onThisBoard = (name) => (groups.get(name) || WORK_GROUP) === opts.group;
   // The fleet read dominates the wall clock, so it runs alongside every
   // project's git reads rather than after them.
-  const [projects, live] = await Promise.all([
-    Promise.all(registry.map(projectHealth)),
+  const [projects, fleet] = await Promise.all([
+    Promise.all(mine.map(projectHealth)),
     liveWork(),
   ]);
+  const live = { ...fleet, tasks: fleet.tasks.filter((task) => onThisBoard(task.project)) };
   // Reads killed by a stop would render a board full of things that are only
   // missing because the watch was interrupted, so an interrupted pass publishes
   // nothing and the last good page stands.
