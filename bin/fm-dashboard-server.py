@@ -48,14 +48,22 @@ started when there was nothing to run. _run_script_error is the single owner
 of "is this run script runnable": absent, not absolute, not a file, and not
 executable are all rejected there, because tmux resolves a relative command
 against the project directory it is given while this server would resolve it
-against its own cwd, and tmux exits 0 either way. This is the only place a
-client-supplied value reaches a subprocess call, and it is always passed as a
-tmux window name (a single argv element, never shell text).
+against its own cwd, and tmux exits 0 either way.
+
+Neither value that reaches tmux is client-supplied text: the project name is
+passed as a tmux window name, a single argv element tmux never re-parses, and
+the run script is a path the snapshot registered. The run script is still
+shell text, though - tmux hands a one-argument shell-command to "/bin/sh -c" -
+so _launch quotes it once for that shell. Unquoted, a valid path carrying a
+shell metacharacter ("/home/x/proj/run(1).sh") passes every check above and is
+then rejected by sh with a syntax error that tmux reports as success: the
+window closes and Run says "Started" with nothing running.
 """
 import http.server
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import threading
@@ -164,6 +172,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         return None
 
     def _launch(self, name, path, run_script):
+        command = shlex.quote(run_script)
         with LAUNCH_LOCK:
             # list-windows also answers "does the session exist at all" - it
             # exits non-zero for a missing session or a missing tmux server.
@@ -178,7 +187,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if existing.returncode != 0:
                 subprocess.run(
                     ["tmux", "new-session", "-d", "-s", SESSION,
-                     "-n", name, "-c", path, run_script],
+                     "-n", name, "-c", path, command],
                     check=True,
                     timeout=TMUX_TIMEOUT,
                 )
@@ -199,7 +208,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     )
                     return
             subprocess.run(
-                ["tmux", "new-window", "-t", SESSION_TARGET, "-n", name, "-c", path, run_script],
+                ["tmux", "new-window", "-t", SESSION_TARGET, "-n", name, "-c", path, command],
                 check=True,
                 timeout=TMUX_TIMEOUT,
             )

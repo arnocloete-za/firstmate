@@ -13,6 +13,8 @@
 # not a directory, and of a cross-site or non-JSON request, and (when tmux is
 # available) its registry-trusted launch plus that a second /run for the same
 # project - including one whose name contains a "." - selects the existing
+# window, that a run script whose path carries a shell metacharacter really
+# runs rather than reporting a launch tmux never made, that the existing
 # window instead of duplicating it, silently no-oping, or ever
 # killing/replacing a still-running process, that the first Run creates the
 # session carrying only the project's own window, and that concurrent Runs can
@@ -197,6 +199,20 @@ NOEXEC_SCRIPT="$TMP_ROOT/noexec-run.sh"
 printf '#!/usr/bin/env bash\nsleep 30\n' > "$NOEXEC_SCRIPT"
 chmod 0644 "$NOEXEC_SCRIPT"
 
+# tmux hands a one-argument shell-command to `/bin/sh -c`, so an otherwise
+# perfectly valid path carrying a shell metacharacter is re-parsed by sh. It
+# passes every server-side check (absolute, a file, executable), sh then
+# rejects it, and tmux still exits 0 - a launch that never happened reported
+# as success.
+META_MARKER="$TMP_ROOT/meta.marker"
+META_SCRIPT="$TMP_ROOT/meta run(1).sh"
+cat > "$META_SCRIPT" <<EOF
+#!/usr/bin/env bash
+echo "\$PWD" > "$META_MARKER"
+sleep 30
+EOF
+chmod +x "$META_SCRIPT"
+
 GONE_DIR="$TMP_ROOT/gone-proj"
 
 DATA="$TMP_ROOT/snapshot.json"
@@ -240,6 +256,18 @@ cat > "$DATA" <<JSON
       "last_commit": {"date": "2026-01-01T00:00:00Z", "author": "alice", "subject": "init"},
       "commits": [],
       "run_script": "$TMP_ROOT/dottedtest.sh"
+    },
+    {
+      "name": "metatest",
+      "path": "$RUNTEST_DIR",
+      "available": true,
+      "clean": true,
+      "branch": "main",
+      "default_branch": "main",
+      "on_default": true,
+      "last_commit": {"date": "2026-01-01T00:00:00Z", "author": "alice", "subject": "init"},
+      "commits": [],
+      "run_script": "$META_SCRIPT"
     },
     {
       "name": "conctest",
@@ -610,6 +638,24 @@ else
   [ "$(active_dashboard_window)" = "run.test" ] \
     || fail "a second /run for a dotted project name should focus its existing window, active was $(active_dashboard_window)"
   pass "a second /run for a project name containing a '.' selects its existing window instead of quietly focusing nothing"
+
+  # A shell-hostile but entirely valid run-script path must actually execute.
+  META_CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$URL3/run" \
+    -H 'Content-Type: application/json' -d '{"name":"metatest"}')
+  [ "$META_CODE" = "200" ] \
+    || fail "/run should accept a run script whose path needs shell quoting, got $META_CODE"
+  waited=0
+  while [ ! -f "$META_MARKER" ] && [ "$waited" -lt 50 ]; do
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  [ -f "$META_MARKER" ] \
+    || fail "/run reported success but the shell-quoted run script never ran (no marker file)"
+  [ "$(cat "$META_MARKER")" = "$RUNTEST_DIR" ] \
+    || fail "the shell-quoted run script ran in the wrong directory: $(cat "$META_MARKER")"
+  [ -n "$(dashboard_window_ids metatest)" ] \
+    || fail "the shell-quoted run script's tmux window did not survive its launch"
+  pass "/run runs a script whose absolute path carries a shell metacharacter instead of reporting a launch that never happened"
 
   # <project name> <label>: fire six /run requests at once. Every one must
   # answer 200, and exactly one window must exist afterwards - an unserialized
