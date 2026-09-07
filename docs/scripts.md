@@ -19,9 +19,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-fleet-view.sh`       | Render the fleet snapshot as a human Markdown view                                   |
 | `fm-bearings-snapshot.sh` | Project the bounded remote-ledger fleet snapshot to compact TOON; `--include-prs` adds live GitHub enrichment |
 | `fm-bearings-board.sh`   | Build and arm the stable interactive `/bearings lavish` fleet board                  |
-| `fm-dashboard-snapshot.sh` | Read-only per-project git status (cleanliness, last commit, recent commits, branch vs. default) for the `/dashboard` board |
-| `fm-dashboard-live-snapshot.sh` | Read-only live-work projection over the canonical fleet snapshot for the `/dashboard` board: one row per running task with its project, current activity, what it waits on, and how to reach its terminal |
-| `fm-dashboard-serve.sh`  | Build the `/dashboard` board from a project snapshot plus the optional `--live` work projection and serve it on a local port, reusing an already-live server for the home |
+| `fm-dashboard.mjs`       | Generate the read-only `/dashboard` page: every registered project's git health beside one row per running task, written as one static HTML file with no server and no path back to the fleet |
 | `fm-secondmate-reconcile.sh` | Queue Bearings reconcile requests for later supervision delivery and ask each mismatched home through its durable inbox with a per-home cooldown |
 | `fm-update.sh`           | Fast-forward-only self-update of firstmate and local or remote secondmate homes       |
 | `fm-on.sh`               | Execute one tracked Firstmate command in a configured remote secondmate home, using its job worker except for the doctor bootstrap |
