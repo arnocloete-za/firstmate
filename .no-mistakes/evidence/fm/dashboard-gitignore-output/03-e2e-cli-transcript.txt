@@ -1,0 +1,46 @@
+
+=== BEFORE (home at 01bfb80) - captain runs /dashboard twice
+    dashboard: /tmp/fm-dash-e2e-t/before/.dashboard/index.html
+    served: http://127.0.0.1:4810/
+    board says the firstmate repo is: UNCOMMITTED
+  $ git status --short
+    ?? .dashboard/
+  $ bin/fm-update.sh   (the /updatefirstmate mechanics)
+    firstmate: skipped: dirty working tree
+    reread-firstmate: no
+    nudge-secondmates: none
+    HEAD stays at 01bfb80 - the home is stranded
+
+=== AFTER (home at a8d974c) - captain runs /dashboard twice
+    dashboard: /tmp/fm-dash-e2e-t/after/.dashboard/index.html
+    served: http://127.0.0.1:4820/
+    board says the firstmate repo is: CLEAN
+  $ git status --short
+    (no output above: the generated board is not uncommitted work)
+  $ git check-ignore -v .dashboard/index.html
+    .gitignore:7:.dashboard/	.dashboard/index.html
+
+=== SYNC GUARD - a home carrying a board it generated before the ignore rule
+  host status.showUntrackedFiles=normal -> porcelain reads "?? .dashboard/"
+  pre-fix guard : secondmate sm1: skipped: dirty working tree
+     home HEAD now: 01bfb80
+  this change  : secondmate sm1: updated 01bfb80..a8d974c (instructions changed: bin)
+     home HEAD now: a8d974c
+  host status.showUntrackedFiles=all -> porcelain reads "?? .dashboard/index.html"
+  pre-fix guard : secondmate sm1: skipped: dirty working tree
+     home HEAD now: 01bfb80
+  this change  : secondmate sm1: updated 01bfb80..a8d974c (instructions changed: bin)
+     home HEAD now: a8d974c
+
+=== STILL PROTECTED - genuine uncommitted work next to the board
+  this change  : secondmate sm1: skipped: dirty working tree
+     home HEAD now: 01bfb80
+     local edit preserved: 1
+
+=== BONUS - host status.showUntrackedFiles=no no longer hides operator work
+  plain porcelain hides it: []
+  pre-fix guard : secondmate sm1: updated 01bfb80..a8d974c (instructions changed: bin)
+     home HEAD now: a8d974c
+  this change  : secondmate sm1: skipped: dirty working tree
+     home HEAD now: 01bfb80
+

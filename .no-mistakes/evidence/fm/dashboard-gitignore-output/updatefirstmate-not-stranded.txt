@@ -1,0 +1,27 @@
+### /updatefirstmate on homes that already generated a dashboard board
+# Both the firstmate repo and its secondmate home carry an untracked
+# .dashboard/index.html they produced before the ignore rule existed.
+
+$ git -C $FM_ROOT status --short
+?? .dashboard/
+
+--- BEFORE the fix (toolchain at 01bfb80) -----------------------------
+$ bin/fm-update.sh
+firstmate: skipped: dirty working tree
+secondmate sm1: skipped: dirty working tree
+reread-firstmate: no
+nudge-secondmates: none
+  -> firstmate HEAD=dc27e28 origin/main=a23ad39  (never advanced: stranded)
+
+--- AFTER the fix (toolchain at 4ca23b7) ------------------------------
+$ bin/fm-update.sh
+firstmate: updated dc27e28..a23ad39 (instructions changed: AGENTS.md, bin)
+secondmate sm1: updated dc27e28..a23ad39 (instructions changed: AGENTS.md, bin)
+reread-firstmate: yes
+nudge-secondmates: fm-sm1
+
+# The homes actually advanced, and their generated board survived:
+  firstmate  HEAD=a23ad39 origin/main=a23ad39
+  secondmate HEAD=a23ad39 origin/main=a23ad39
+$ cat $FM_ROOT/.dashboard/index.html
+<html>generated board</html>

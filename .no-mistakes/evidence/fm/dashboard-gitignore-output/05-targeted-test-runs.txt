@@ -1,0 +1,23 @@
+Targeted tests: fail before the fix, pass after it, on every host untracked-files mode
+(GIT_CONFIG_GLOBAL pinning status.showUntrackedFiles, so nothing is host-dependent
+and no assertion can pass vacuously).
+
+  host status.showUntrackedFiles   tests/fm-dashboard-serve.test.sh   tests/fm-update.test.sh (T12)
+  ------------------------------   --------------------------------   -----------------------------
+  normal    target commit          exit 0                             exit 0
+  all       target commit          exit 0                             exit 0
+  no        target commit          exit 0                             exit 0
+  normal    .gitignore + fm-ff-lib.sh reverted to 01bfb80
+                                   exit 1                             exit 1
+  all       (same pre-fix source)  exit 1                             exit 1
+  no        (same pre-fix source)  exit 1                             exit 1
+
+Pre-fix failure messages (identical under all three host modes):
+  not ok - generated dashboard output left the home dirty: ?? .dashboard/
+  not ok - generated board did not block the firstmate update (missing: 'firstmate: updated ')
+
+Fixture-hardening check - with `git init` sabotaged via a PATH shim, the new
+dashboard fixture aborts loudly instead of green-passing on an empty status:
+  $ PATH=<shim>:$PATH bash tests/fm-dashboard-serve.test.sh
+    fake: refusing init
+    not ok - could not git init the fixture home        (exit 1)

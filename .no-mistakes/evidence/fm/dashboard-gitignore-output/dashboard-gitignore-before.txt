@@ -1,0 +1,13 @@
+### BEFORE the fix: same home at the parent commit 01bfb80
+$ git -C $FM_HOME log --oneline -1
+01bfb80 feat(dashboard): rename dirty to uncommitted, flag recent activity by author
+
+$ bin/fm-dashboard-serve.sh build /tmp/snapshot.json
+dashboard: /tmp/fm-dash-e2e.cGUAcO/home-before/.dashboard/index.html
+served: http://127.0.0.1:4592/
+
+$ git -C $FM_HOME status --short      # <-- the reported problem
+?? .dashboard/
+
+$ git -C $FM_HOME check-ignore -v .dashboard/index.html; echo "exit=$?"
+exit=1

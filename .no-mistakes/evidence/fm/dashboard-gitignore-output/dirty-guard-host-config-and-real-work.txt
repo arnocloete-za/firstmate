@@ -1,0 +1,19 @@
+### Same scenario on a host with status.showUntrackedFiles = all
+$ git -C $FM_ROOT status --porcelain     # per-file, not collapsed
+?? .dashboard/index.html
+$ bin/fm-update.sh
+firstmate: updated 4627116..ba7f8b3 (instructions changed: AGENTS.md, bin)
+secondmate sm1: updated 4627116..ba7f8b3 (instructions changed: AGENTS.md, bin)
+reread-firstmate: yes
+nudge-secondmates: fm-sm1
+
+### The exclusion stays narrow: real uncommitted work still skips
+# sm1 has BOTH the generated board and a hand edit to AGENTS.md.
+$ bin/fm-update.sh
+firstmate: updated 4627116..ba7f8b3 (instructions changed: AGENTS.md, bin)
+secondmate sm1: skipped: dirty working tree
+reread-firstmate: yes
+nudge-secondmates: none
+
+$ tail -1 $SM_HOME/AGENTS.md            # the operator's edit survived
+uncommitted local edit

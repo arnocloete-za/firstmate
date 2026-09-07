@@ -1,0 +1,29 @@
+### An operator's firstmate home, before running /dashboard
+
+$ git -C $FM_HOME status --short
+(no output: clean)
+
+### Step 2 of /dashboard - gather every registered project's git status
+$ bin/fm-dashboard-snapshot.sh > /tmp/snapshot.json
+exit=0
+schema: fm-dashboard-snapshot.v1  projects: 2
+
+### Step 3 of /dashboard - build and serve the board
+$ bin/fm-dashboard-serve.sh build /tmp/snapshot.json
+dashboard: /tmp/fm-dash-e2e.cGUAcO/home/.dashboard/index.html
+served: http://127.0.0.1:4591/
+
+### The board really was written into the home
+$ ls -l $FM_HOME/.dashboard/
+  total 16
+  -rw-r--r-- 1 arno arno 13971 Sep  7 10:56 index.html
+
+### THE FIX: git no longer reports the generated board as uncommitted work
+$ git -C $FM_HOME status --short
+(no output: still clean)
+
+$ git -C $FM_HOME status --short --ignored=matching -- .dashboard
+!! .dashboard/
+
+$ git -C $FM_HOME check-ignore -v .dashboard/index.html
+.gitignore:7:.dashboard/	.dashboard/index.html
