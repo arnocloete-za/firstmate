@@ -300,14 +300,23 @@ test_unsafe_secondmate_home_skipped_before_git_update() {
 # output as operator work would make this guard refuse the very update that
 # lands the ignore rule, stranding that home for good. The exclusion is exactly
 # that narrow: real uncommitted work alongside the board still skips the home.
+#
+# Both worlds pin status.showUntrackedFiles=all, under which git reports the
+# board per file (`?? .dashboard/index.html`) instead of collapsing it to
+# `?? .dashboard/`. The verdict must not depend on that host setting either way.
 test_generated_dashboard_output_does_not_block_update() {
   local w out
   w=$(new_world t12)
   add_sm "$w" sm1
   bump_origin "$w" instr
+  git -C "$w/main" config status.showUntrackedFiles all
   mkdir -p "$w/main/.dashboard" "$w/sm1/.dashboard"
   printf '<html>board</html>\n' > "$w/main/.dashboard/index.html"
   printf '<html>board</html>\n' > "$w/sm1/.dashboard/index.html"
+
+  # Guard the premise: this fixture really does produce the per-file form.
+  git -C "$w/main" status --porcelain | grep -q '^?? \.dashboard/index\.html$' \
+    || fail "fixture did not reproduce the per-file untracked form"
 
   out=$(run_update "$w")
 
@@ -322,6 +331,7 @@ test_generated_dashboard_output_does_not_block_update() {
   w=$(new_world t12b)
   add_sm "$w" sm1
   bump_origin "$w" instr
+  git -C "$w/main" config status.showUntrackedFiles all
   mkdir -p "$w/sm1/.dashboard"
   printf '<html>board</html>\n' > "$w/sm1/.dashboard/index.html"
   printf 'uncommitted local edit\n' >> "$w/sm1/AGENTS.md"

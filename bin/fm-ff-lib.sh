@@ -251,20 +251,26 @@ remote_sync_failure_reason() { # <exit-status> <output>
 # First porcelain line that counts as the target's own uncommitted work, or
 # empty when it has none.
 #
-# Firstmate's generated dashboard output is always excluded. The tracked
-# .gitignore hides it, but a home that generated it BEFORE fast-forwarding to
-# the commit carrying that rule still reports it as untracked - and treating
-# that as operator work would make this guard refuse the very self-update that
-# lands the rule, stranding the home permanently. The seeded secondmate-home
-# marker is excluded on the same grounds, but only for callers that opt in.
-# Neither exclusion relaxes anything for any other untracked path: porcelain
-# never emits an empty line, so an opted-out marker matches nothing.
+# Firstmate's generated dashboard output is always excluded, at any depth. The
+# tracked .gitignore hides it, but a home that generated it BEFORE
+# fast-forwarding to the commit carrying that rule still reports it as
+# untracked - and treating that as operator work would make this guard refuse
+# the very self-update that lands the rule, stranding the home permanently. The
+# seeded secondmate-home marker is excluded on the same grounds, but only for
+# callers that opt in. Neither exclusion relaxes anything outside those two
+# Firstmate-owned paths: porcelain never emits an empty line, so an opted-out
+# marker matches nothing, and a TRACKED file under the dashboard directory
+# would carry a status code other than "??" and still read as dirty.
+#
+# --untracked-files is pinned so the verdict never depends on the host's
+# status.showUntrackedFiles: "all" would split an untracked directory into
+# per-file lines, and "no" would hide genuinely untracked operator work.
 dirty_status() {
   local dir=$1 ignore_seed_marker=${2:-no} seed=""
   [ "$ignore_seed_marker" != yes ] || seed="?? $SUB_HOME_MARKER"
-  git -C "$dir" status --porcelain 2>/dev/null |
+  git -C "$dir" status --porcelain --untracked-files=normal 2>/dev/null |
     awk -v seed="$seed" -v generated="?? $DASHBOARD_OUTPUT_MARKER" \
-      '$0 != seed && $0 != generated { print; exit }'
+      '$0 != seed && index($0, generated) != 1 { print; exit }'
 }
 
 # List this home's LIVE secondmate direct reports from state/<id>.meta records.
