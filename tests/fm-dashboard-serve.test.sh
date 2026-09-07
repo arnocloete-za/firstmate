@@ -15,6 +15,13 @@
 # killing/replacing a still-running process, that the first Run creates the
 # session carrying only the project's own window, and that concurrent Runs can
 # neither duplicate a window nor collide creating the session.
+#
+# It also proves its own blast radius: the run below is wrapped in a parent
+# phase that parks a canary session on the real default tmux socket, runs this
+# whole file - teardown included - as a child, and requires the canary to
+# still be there afterwards. FM_DASHBOARD_SERVE_CHILD=1 selects the child
+# phase; run that way by hand, the suite skips the proof and prints no final
+# ALL TESTS PASSED line, which the parent owns.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -26,6 +33,45 @@ command -v jq >/dev/null 2>&1 || { echo "skip: jq not found"; exit 0; }
 command -v python3 >/dev/null 2>&1 || { echo "skip: python3 not found"; exit 0; }
 command -v curl >/dev/null 2>&1 || { echo "skip: curl not found"; exit 0; }
 
+# --- blast-radius proof (parent phase) --------------------------------------
+#
+# The claim under test is structural: this suite's teardown can only ever
+# reach the private socket it created itself. Park a canary session on the
+# REAL default socket - where the captain's own sessions live - run the whole
+# suite as a child with $TMUX pointed at that same server (so a suite that
+# relied on TMUX_TMPDIR would resolve straight onto it), and require the
+# canary to survive. Only ever kills its own pid-named session, never a
+# server.
+if [ "${FM_DASHBOARD_SERVE_CHILD:-0}" != "1" ]; then
+  PARENT_TMUX=$(command -v tmux 2>/dev/null || true)
+  if [ -z "$PARENT_TMUX" ]; then
+    echo "skip: tmux not found, running the suite without the blast-radius proof"
+    FM_DASHBOARD_SERVE_CHILD=1 exec bash "$0"
+  fi
+  CANARY="fm-dashboard-canary-$$"
+  "$PARENT_TMUX" new-session -d -s "$CANARY" -n keepalive 'sleep 600' \
+    || fail "could not park the canary session on the default tmux socket"
+  canary_cleanup() {
+    "$PARENT_TMUX" kill-session -t "=$CANARY" >/dev/null 2>&1 || true
+    fm_test_cleanup
+  }
+  trap canary_cleanup EXIT INT TERM
+  CANARY_SOCKET=$("$PARENT_TMUX" display-message -p -t "=$CANARY" '#{socket_path}' 2>/dev/null)
+  [ -n "$CANARY_SOCKET" ] || fail "could not resolve the canary session's socket path"
+
+  FM_DASHBOARD_SERVE_CHILD=1 TMUX="$CANARY_SOCKET,0,0" bash "$0"
+  CHILD_RC=$?
+
+  "$PARENT_TMUX" has-session -t "=$CANARY" 2>/dev/null \
+    || fail "the suite teardown reached a tmux server it does not own: the canary session on $CANARY_SOCKET is gone"
+  canary_cleanup
+  trap - EXIT INT TERM
+  [ "$CHILD_RC" -eq 0 ] || exit "$CHILD_RC"
+  pass "a full suite run, teardown included, leaves an unrelated tmux server on the default socket untouched"
+  echo "ALL TESTS PASSED"
+  exit 0
+fi
+
 TMP_ROOT=$(fm_test_tmproot fm-dashboard-serve)
 FM_HOME="$TMP_ROOT/home"
 mkdir -p "$FM_HOME/state"
@@ -36,16 +82,37 @@ export FM_HOME
 # started on any exit path.
 export FM_DASHBOARD_PORT_BASE=$((20000 + (RANDOM % 5000)))
 # /run drives a real tmux, and the session name it uses ("dashboard") is fixed
-# by design - the captain reuses one persistent session. Point this whole test
-# run, the dashboard server it starts included, at a private tmux socket
-# directory, so it can never see, mutate, or destroy the captain's own
-# "dashboard" session, and so "no dashboard session yet" is a state this test
-# can actually arrange.
-export TMUX_TMPDIR="$TMP_ROOT/tmux"
-mkdir -p "$TMUX_TMPDIR"
+# by design - the captain reuses one persistent session. This suite must be
+# structurally incapable of reaching a tmux server it did not create, so it
+# owns a private socket named with its own pid and reaches tmux only through a
+# PATH shim that pins every call to that socket - the same idiom as
+# tests/fm-backend-tmux-smoke.test.sh. `-L` overrides $TMUX, so the shim holds
+# even when the suite runs from inside the captain's own tmux; TMUX_TMPDIR
+# does not (tmux honours $TMUX over it, and silently falls back to the real
+# default socket when the directory is missing), so it must not be used here.
+# The shim is inherited through PATH by the dashboard server this suite
+# launches, whose own tmux calls are bare `tmux`. Every teardown, kill-server
+# included, is scoped to that one socket by construction.
+REAL_TMUX=$(command -v tmux 2>/dev/null || true)
+TMUX_SOCKET="fm-dashboard-$$"
+SHIM_DIR=
+if [ -n "$REAL_TMUX" ]; then
+  SHIM_DIR=$(mktemp -d "${TMPDIR:-/tmp}/fm-dashboard-shim.XXXXXX") \
+    || fail "cannot stage the tmux shim directory"
+  cat > "$SHIM_DIR/tmux" <<SH
+#!/usr/bin/env bash
+exec "$REAL_TMUX" -L "$TMUX_SOCKET" "\$@"
+SH
+  chmod +x "$SHIM_DIR/tmux"
+  PATH="$SHIM_DIR:$PATH"
+  export PATH
+fi
 cleanup() {
   "$SERVE" stop >/dev/null 2>&1 || true
-  tmux kill-server >/dev/null 2>&1 || true
+  if [ -n "$REAL_TMUX" ]; then
+    "$REAL_TMUX" -L "$TMUX_SOCKET" kill-server >/dev/null 2>&1 || true
+  fi
+  [ -n "$SHIM_DIR" ] && rm -rf "$SHIM_DIR"
   fm_test_cleanup
 }
 trap cleanup EXIT INT TERM
@@ -82,6 +149,13 @@ chmod +x "$TMP_ROOT/conctest.sh"
 # tmux exits 0 for a command that cannot run, and the window vanishes, so only
 # the server can tell the captain that a registered run script is gone or is
 # not executable.
+# A relative run script that really does resolve against the server's own cwd
+# (the repo root this suite runs from), which is the wrong base: tmux resolves
+# the command against the project directory it is handed instead, so the two
+# disagree and tmux still exits 0.
+RELATIVE_SCRIPT="bin/fm-dashboard-server.py"
+[ -x "$RELATIVE_SCRIPT" ] || fail "test fixture error: $RELATIVE_SCRIPT should be executable from the suite's cwd"
+
 MISSING_SCRIPT="$TMP_ROOT/missing-run.sh"
 NOEXEC_SCRIPT="$TMP_ROOT/noexec-run.sh"
 printf '#!/usr/bin/env bash\nsleep 30\n' > "$NOEXEC_SCRIPT"
@@ -142,6 +216,18 @@ cat > "$DATA" <<JSON
       "last_commit": {"date": "2026-01-01T00:00:00Z", "author": "alice", "subject": "init"},
       "commits": [],
       "run_script": "$TMP_ROOT/conctest.sh"
+    },
+    {
+      "name": "relativescript",
+      "path": "$RUNTEST_DIR",
+      "available": true,
+      "clean": true,
+      "branch": "main",
+      "default_branch": "main",
+      "on_default": true,
+      "last_commit": {"date": "2026-01-01T00:00:00Z", "author": "alice", "subject": "init"},
+      "commits": [],
+      "run_script": "$RELATIVE_SCRIPT"
     },
     {
       "name": "missingscript",
@@ -301,7 +387,11 @@ NOEXEC_CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$URL3/run" \
   -H 'Content-Type: application/json' -d '{"name":"noexecscript"}')
 [ "$NOEXEC_CODE" = "400" ] \
   || fail "/run should reject a project whose run script is not executable, got $NOEXEC_CODE"
-pass "/run rejects a project whose run script is missing or not executable instead of reporting it started"
+RELATIVE_CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$URL3/run" \
+  -H 'Content-Type: application/json' -d '{"name":"relativescript"}')
+[ "$RELATIVE_CODE" = "400" ] \
+  || fail "/run should reject a project whose run script is a relative path, got $RELATIVE_CODE"
+pass "/run rejects a project whose run script is missing, relative, or not executable instead of reporting it started"
 
 # Only the served page's own same-origin requests may launch anything: any
 # other page the captain has open must not be able to use this loopback port.
@@ -465,4 +555,3 @@ else
   pass "concurrent /run requests with no dashboard session yet cannot collide creating it"
 fi
 
-echo "ALL TESTS PASSED"

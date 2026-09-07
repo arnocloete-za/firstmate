@@ -39,10 +39,13 @@ The request body carries only a project name, never a path or command. The
 name is resolved against the fm-dashboard-snapshot.v1 payload embedded in
 <directory>/index.html - the same trusted data bin/fm-dashboard-snapshot.sh
 already read from data/projects.md - and a name that is not a known
-registered project with a run_script, whose path is not a directory right
-now, or whose run script is not an executable file right now, is rejected with
+registered project, or one that is not runnable right now, is rejected with
 400 rather than launched from the wrong working directory or reported as
-started when there was nothing to run. This is the only place a
+started when there was nothing to run. _run_script_error is the single owner
+of "is this run script runnable": absent, not absolute, not a file, and not
+executable are all rejected there, because tmux resolves a relative command
+against the project directory it is given while this server would resolve it
+against its own cwd, and tmux exits 0 either way. This is the only place a
 client-supplied value reaches a subprocess call, and it is always passed as a
 tmux window name (a single argv element, never shell text).
 """
@@ -93,18 +96,17 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return
 
         run_script = project.get("run_script")
+        run_script_error = self._run_script_error(name, run_script)
+        if run_script_error is not None:
+            self._respond_json(400, {"error": run_script_error})
+            return
+
         path = project.get("path")
-        if not run_script or not path:
-            self._respond_json(400, {"error": "project has no registered run script: %s" % name})
+        if not path:
+            self._respond_json(400, {"error": "project has no registered path: %s" % name})
             return
         if not os.path.isdir(path):
             self._respond_json(400, {"error": "project path is not a directory: %s" % path})
-            return
-        if not os.path.isfile(run_script) or not os.access(run_script, os.X_OK):
-            self._respond_json(
-                400,
-                {"error": "project run script is not an executable file: %s" % run_script},
-            )
             return
 
         try:
@@ -113,6 +115,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._respond_json(500, {"error": "launch failed: %s" % exc})
             return
         self._respond_json(200, {"ok": True})
+
+    def _run_script_error(self, name, run_script):
+        if not run_script:
+            return "project has no registered run script: %s" % name
+        if not os.path.isabs(run_script):
+            return "project run script is not an absolute path: %s" % run_script
+        if not os.path.isfile(run_script) or not os.access(run_script, os.X_OK):
+            return "project run script is not an executable file: %s" % run_script
+        return None
 
     def _cross_site_reason(self):
         content_type = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
