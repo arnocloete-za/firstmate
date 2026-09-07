@@ -27,7 +27,13 @@ export FM_HOME
 # range on the test host cannot flake it, and stop any server this test
 # started on any exit path.
 export FM_DASHBOARD_PORT_BASE=$((20000 + (RANDOM % 5000)))
-cleanup() { "$SERVE" stop >/dev/null 2>&1 || true; fm_test_cleanup; }
+# The git-home leg below serves from a second home, so stop that server too;
+# GIT_HOME only exists once that leg starts.
+git_home_stop() {
+  [ -n "${GIT_HOME:-}" ] || return 0
+  FM_HOME="$GIT_HOME" "$SERVE" stop >/dev/null 2>&1 || true
+}
+cleanup() { git_home_stop; "$SERVE" stop >/dev/null 2>&1 || true; fm_test_cleanup; }
 trap cleanup EXIT INT TERM
 
 DATA="$TMP_ROOT/snapshot.json"
@@ -138,9 +144,6 @@ FIXTURE_STATUS=$(git -C "$GIT_HOME" status --porcelain --untracked-files=normal)
   || fail "fixture home was not clean before the dashboard build: $FIXTURE_STATUS"
 git -C "$GIT_HOME" ls-files --error-unmatch .gitignore >/dev/null 2>&1 \
   || fail "the fixture home does not actually track a root .gitignore"
-
-git_home_stop() { FM_HOME="$GIT_HOME" "$SERVE" stop >/dev/null 2>&1 || true; }
-cleanup() { git_home_stop; "$SERVE" stop >/dev/null 2>&1 || true; fm_test_cleanup; }
 
 OUT3=$(FM_HOME="$GIT_HOME" "$SERVE" build "$DATA") || fail "build failed in a git home: $OUT3"
 [ -f "$GIT_HOME/.dashboard/index.html" ] \
