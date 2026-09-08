@@ -1,7 +1,10 @@
 # shellcheck shell=bash
-# Single owner of the project-directory workspace model used by delivery mode
-# `project-branch`. Sourced by bin/fm-spawn.sh (dispatch guards and branch
-# establishment) and bin/fm-teardown.sh (cleanup that must leave the directory
+# Single owner of WHERE a registered project's work happens, in both directions:
+# the project-directory workspace model used by delivery mode `project-branch`,
+# and the matching refusal to run a registered project's ship work in a
+# disposable copy instead. Sourced by bin/fm-spawn.sh (dispatch guards and branch
+# establishment), bin/fm-promote.sh (the scout-to-ship entry to the same
+# decision), and bin/fm-teardown.sh (cleanup that must leave the directory
 # exactly as the captain left it).
 # Usage: . bin/fm-project-branch-lib.sh   (requires bin/fm-tangle-lib.sh for
 # fm_default_branch, and bin/fm-control-lib.sh for the wiring-path table)
@@ -37,6 +40,100 @@
 # The model is recorded in a task's metadata as `workspace=project`; an absent
 # `workspace=` means the historical isolated copy, so old task records keep their
 # meaning. bin/fm-spawn.sh's header owns that field, as it owns every other.
+
+# --- The disposable copy is not a fallback ------------------------------------
+#
+# Every other refusal in this file protects the captain's own directory. This one
+# protects the model itself, and it exists because those refusals alone protected
+# nothing: when an in-place dispatch stopped because the project was occupied,
+# dispatching the SAME work with any other delivery mode was still legal, and it
+# allocated a disposable copy - the exact thing the in-place model replaced. A
+# guard that is walked around by choosing a different flag is decoration, so the
+# other side of the choice has to refuse too.
+#
+# The line, decided once here:
+#
+#   SHIP work aimed at one of the captain's OWN registered projects runs in that
+#   project's directory, on a branch he can see. A disposable copy of a
+#   registered project is available for a piece of ship work only when the
+#   captain has authorized THAT piece of work, and only from a record on disk.
+#
+# What is deliberately left alone:
+#   - Scouts. Investigation and throwaway experiments are exactly the work that
+#     should never touch the captain's directory, and a scout produces a report
+#     rather than a project change, so it can carry no shipping work around this
+#     gate. `project-branch` is ship-only for the same reason.
+#   - Projects the captain never registered - firstmate's own repo among them.
+#     They are not his working copies to protect.
+#   - A relaunch, which adopts an existing task's recorded directory and creates
+#     nothing; the gate belongs on the dispatch that allocates.
+#
+# The authorization is a per-task record written by bin/fm-isolated-authorize.sh
+# and never by a flag, because a flag is the walk-around this guard exists to
+# close: it would live in whichever agent chose it, and firstmate inferring that
+# the captain "would have wanted" the copy is the failure being fixed. The record
+# names the task and the project, so it authorizes one piece of work on one
+# project and expires with the task.
+
+fm_project_branch_isolation_record() {  # <state-dir> <task-id>
+  printf '%s/%s.isolated-authorized\n' "$1" "$2"
+}
+
+# The project the captain authorized a disposable copy for on <task-id>, or
+# nothing when no usable record exists. A record that names another task is not
+# this task's authorization and is reported as absent.
+fm_project_branch_isolation_authorized_project() {  # <state-dir> <task-id>
+  local state=$1 id=$2 record recorded_task recorded_project
+  record=$(fm_project_branch_isolation_record "$state" "$id")
+  [ -f "$record" ] && [ ! -L "$record" ] || return 0
+  recorded_task=$(grep '^task=' "$record" 2>/dev/null | tail -1 | cut -d= -f2- || true)
+  [ "$recorded_task" = "$id" ] || return 0
+  recorded_project=$(grep '^project=' "$record" 2>/dev/null | tail -1 | cut -d= -f2- || true)
+  [ -n "$recorded_project" ] || return 0
+  printf '%s\n' "$recorded_project"
+}
+
+# Refuse a disposable-copy dispatch of ship work aimed at a registered project.
+#
+# <mode-script> is bin/fm-project-mode.sh, the single owner of registry parsing;
+# an unregistered project passes straight through. The refusal is written to be
+# relayed to the captain as it stands, so it names the project in his own terms,
+# says what is blocking it, and states his options - AGENTS.md section 9 governs
+# that wording, and an internal noun in here would reach him.
+fm_project_branch_require_isolation_authorized() {  # <mode-script> <state-dir> <task-id> <project-dir> [<project-name>]
+  local mode_script=$1 state=$2 id=$3 dir=$4 name=${5-}
+  local authorized current default
+  [ -n "$name" ] || name=$(basename "$dir")
+  "$mode_script" --registered "$name" >/dev/null 2>&1 || return 0
+
+  authorized=$(fm_project_branch_isolation_authorized_project "$state" "$id")
+  if [ -n "$authorized" ]; then
+    if [ "$authorized" = "$name" ]; then
+      echo "notice: $id runs in a throwaway copy of $name on the captain's own recorded say-so" >&2
+      return 0
+    fi
+    echo "error: HALTED: the captain's recorded say-so for this piece of work names $authorized, not $name" >&2
+    echo "Nothing was created. Confirm with him which project this work is for before dispatching it." >&2
+    return 1
+  fi
+
+  current=$(git -C "$dir" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
+  default=$(fm_default_branch "$dir" 2>/dev/null || true)
+  {
+    echo "error: HALTED: work on $name runs in the captain's own copy of the project, on a branch he can see - never in a throwaway copy."
+    if [ -n "$current" ] && [ -n "$default" ] && [ "$current" != "$default" ]; then
+      echo "$name is on branch '$current' rather than '$default', so something is already working on it."
+      echo "Nothing was created. Take this to the captain: he can finish or set aside what is on '$current', or tell you this one piece of work may run in a throwaway copy."
+    elif [ -z "$current" ] && [ -n "$default" ]; then
+      echo "$name is not sitting on '$default' at all, so something is already working on it."
+      echo "Nothing was created. Take this to the captain: he can put the project back on '$default', or tell you this one piece of work may run in a throwaway copy."
+    else
+      echo "Nothing was created. Run this work in the project's own directory on a branch the captain names, or ask him whether this one piece of work may run in a throwaway copy."
+    fi
+    echo "Only once he has said so, for this piece of work: bin/fm-isolated-authorize.sh grant $id $name --captain \"<his words>\""
+  } >&2
+  return 1
+}
 
 # Is <dir> the root of its own git work tree? Git discovery walks up, so a plain
 # directory nested inside another repository would otherwise resolve to the
@@ -254,7 +351,7 @@ fm_project_branch_require_no_wiring_conflict() {  # <harness> <dir> <state-real>
   {
     echo "error: this worker's own agent wiring would overwrite files that already exist in the captain's project directory:"
     printf '%s\n' "$conflicts"
-    echo "Nothing here overwrites them. Ask the captain whether those files can be moved aside, or dispatch this work in an isolated copy instead."
+    echo "Nothing here overwrites them. Ask the captain whether those files can be moved aside; a disposable copy is not the way around this, and needs his own say-so for this piece of work."
   } >&2
   return 1
 }

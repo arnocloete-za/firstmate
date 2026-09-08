@@ -21,6 +21,19 @@
 #   7. the worker stops at "ready for a pull request" and cannot open one itself
 #   8. cleanup leaves the captain's directory, branch, and commits alone
 #
+# The last group covers the OTHER side of that same choice. Refusing an in-place
+# dispatch protects nothing while sending the same work to a disposable copy stays
+# legal, so a registered project's ship work is refused there too unless the
+# captain has authorized that exact piece of work:
+#
+#   9. an occupied registered project halts the disposable-copy dispatch as well,
+#      naming the project and the branch holding it, and creating nothing
+#  10. a registered project refuses it even when the project is free
+#  11. only the captain's own recorded say-so lifts it, for that task and that
+#      project alone, carrying to no other task and no other project
+#  12. scouts and unregistered projects still get their disposable copies
+#  13. promoting a scout on a registered project cannot walk around it either
+#
 # Every spawn case here stops before any endpoint exists: the dispatch guards run
 # ahead of backend creation, and a fake `tmux` that exits non-zero backstops the
 # cases meant to get past them, so no window is ever created.
@@ -32,6 +45,8 @@ set -u
 SPAWN="$ROOT/bin/fm-spawn.sh"
 BRIEF="$ROOT/bin/fm-brief.sh"
 TEARDOWN="$ROOT/bin/fm-teardown.sh"
+AUTHORIZE="$ROOT/bin/fm-isolated-authorize.sh"
+PROMOTE="$ROOT/bin/fm-promote.sh"
 TMP_ROOT=$(fm_test_tmproot fm-project-branch)
 
 # A home plus a real project clone with a real origin, so the branch resolution
@@ -48,9 +63,13 @@ make_home() {  # <name> [<default-branch>]
   # A tmux that refuses, so a spawn that clears every dispatch guard still creates
   # nothing. FM_PB_TMUX_OK=1 swaps in a silently succeeding one for the teardown
   # cases, which have to get past the endpoint kill to reach the workspace logic.
+  # It announces its refusal so a test can tell "the dispatch was stopped by a
+  # guard" apart from "the dispatch ran and only the terminal failed" - without
+  # that line every negative assertion below would pass vacuously.
   cat > "$fakebin/tmux" <<'SH'
 #!/usr/bin/env bash
 [ "${FM_PB_TMUX_OK:-0}" = 1 ] && exit 0
+echo "fake tmux refused: $*" >&2
 exit 1
 SH
   # treehouse must never be asked to return anything in this model; if it is, the
@@ -109,6 +128,49 @@ write_brief() {  # <home> <id> <mode> [<branch>]
       printf 'Delivery contract: mode=%s\n' "$mode"
     fi
   } > "$home/data/$id/brief.md"
+}
+
+# A brief for a scout, which records no delivery contract at all.
+write_scout_brief() {  # <home> <id>
+  local home=$1 id=$2
+  mkdir -p "$home/data/$id"
+  printf 'You are a crewmate.\n\n# Task\n## Captain'"'"'s intent\nLook into the thing.\n\n## Firstmate spec\nInvestigate and report.\n' \
+    > "$home/data/$id/brief.md"
+}
+
+# The captain's project registry. Registration is what makes a directory HIS
+# working copy rather than just a path, so it is the whole input to the
+# disposable-copy gate.
+register_project() {  # <home> <name> [<annotation>]
+  local home=$1 name=$2 annotation=${3:-}
+  mkdir -p "$home/data"
+  {
+    printf '# Projects\n\n'
+    if [ -n "$annotation" ]; then
+      printf -- '- %s [%s] - test project (added 2026-01-01)\n' "$name" "$annotation"
+    else
+      printf -- '- %s - test project (added 2026-01-01)\n' "$name"
+    fi
+  } > "$home/data/projects.md"
+}
+
+run_authorize() {  # <home> <authorize-args...>
+  local home=$1
+  shift
+  FM_ROOT_OVERRIDE='' FM_HOME="$home" \
+    FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
+    FM_PROJECTS_OVERRIDE="$TMP_ROOT/projects-unused" FM_CONFIG_OVERRIDE="$home/config" \
+    "$AUTHORIZE" "$@" 2>&1
+}
+
+run_promote() {  # <home> <fakebin> <promote-args...>
+  local home=$1 fakebin=$2
+  shift 2
+  FM_ROOT_OVERRIDE='' FM_HOME="$home" \
+    FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
+    FM_PROJECTS_OVERRIDE="$TMP_ROOT/projects-unused" FM_CONFIG_OVERRIDE="$home/config" \
+    PATH="$fakebin:$PATH" \
+    "$PROMOTE" "$@" 2>&1
 }
 
 # Task metadata standing in for a task firstmate has not torn down yet. Presence
@@ -655,6 +717,237 @@ EOF
   pass "fm-spawn: the orca runtime is refused for the project workspace"
 }
 
+# The captain's own test, reproduced: he put a registered project on a non-default
+# branch deliberately, to see what firstmate would do. The in-place dispatch
+# refusing was never the problem - dispatching the SAME work with an isolated mode
+# afterwards was, because that allocated the disposable copy the in-place model
+# replaced. So the disposable-copy dispatch has to halt on the same evidence, and
+# the halt has to be something he can act on: his project, and the branch on it.
+test_an_occupied_registered_project_halts_the_disposable_copy_too() {
+  local rec home proj fakebin out status before_head before_branch
+  rec=$(make_home occupied-registered master)
+  IFS='|' read -r home proj fakebin <<EOF
+$rec
+EOF
+  register_project "$home" proj no-mistakes-prod-only
+  git -C "$proj" checkout --quiet -b test
+  before_head=$(git -C "$proj" rev-parse HEAD)
+  before_branch=$(git -C "$proj" symbolic-ref --short HEAD)
+
+  write_brief "$home" fallback-k1 no-mistakes
+  out=$(run_spawn "$home" "$fakebin" fallback-k1 "$proj" claude \
+    --mode no-mistakes --yolo off)
+  status=$?
+
+  [ "$status" -ne 0 ] || fail "a disposable-copy dispatch of an occupied registered project should exit non-zero"
+  assert_contains "$out" "HALTED" "the disposable-copy dispatch did not halt"
+  assert_contains "$out" "proj" "the halt did not name the project"
+  assert_contains "$out" "'test'" "the halt did not name the branch blocking the project"
+  assert_contains "$out" "'master'" "the halt did not name the branch the project should be on"
+  assert_not_contains "$out" "fake tmux refused" \
+    "the halted dispatch still went on to create a terminal"
+  assert_absent "$home/state/fallback-k1.meta" "the halted dispatch wrote task metadata"
+  [ "$(git -C "$proj" rev-parse HEAD)" = "$before_head" ] \
+    || fail "the halted dispatch moved the project directory's HEAD"
+  [ "$(git -C "$proj" symbolic-ref --short HEAD)" = "$before_branch" ] \
+    || fail "the halted dispatch moved the project off the branch the captain left it on"
+  pass "fm-spawn: an occupied registered project halts the disposable-copy dispatch and names the branch"
+}
+
+# Occupancy is only the evidence that made the defect visible. The rule itself is
+# about WHERE a registered project's ship work happens, so a project sitting clean
+# on its default branch is refused the disposable copy just the same - otherwise
+# the gate would only be a race against the captain checking out a branch.
+test_a_free_registered_project_still_refuses_the_disposable_copy() {
+  local rec home proj fakebin out status
+  rec=$(make_home free-registered master)
+  IFS='|' read -r home proj fakebin <<EOF
+$rec
+EOF
+  register_project "$home" proj no-mistakes-prod-only
+
+  write_brief "$home" free-k2 no-mistakes
+  out=$(run_spawn "$home" "$fakebin" free-k2 "$proj" claude --mode no-mistakes --yolo off)
+  status=$?
+  [ "$status" -ne 0 ] || fail "a disposable-copy dispatch of a free registered project should exit non-zero"
+  assert_contains "$out" "HALTED" "the disposable-copy dispatch did not halt"
+  assert_contains "$out" "proj" "the halt did not name the project"
+  assert_not_contains "$out" "fake tmux refused" \
+    "the halted dispatch still went on to create a terminal"
+  assert_absent "$home/state/free-k2.meta" "the halted dispatch wrote task metadata"
+  pass "fm-spawn: a registered project refuses the disposable copy even when nothing holds it"
+}
+
+# Every other delivery mode is a different flag on the same dispatch, which is
+# exactly how the disposable copy was reached the first time. None of them may be
+# the way around the gate.
+test_no_delivery_mode_reaches_the_disposable_copy() {
+  local rec home proj fakebin out status mode i
+  rec=$(make_home every-mode master)
+  IFS='|' read -r home proj fakebin <<EOF
+$rec
+EOF
+  register_project "$home" proj no-mistakes-prod-only
+  git -C "$proj" checkout --quiet -b test
+
+  i=0
+  for mode in no-mistakes direct-PR local-only; do
+    i=$((i + 1))
+    write_brief "$home" "modes-k3-$i" "$mode"
+    out=$(run_spawn "$home" "$fakebin" "modes-k3-$i" "$proj" claude --mode "$mode" --yolo off)
+    status=$?
+    [ "$status" -ne 0 ] || fail "mode=$mode should not reach a disposable copy of a registered project"
+    assert_contains "$out" "HALTED" "mode=$mode did not halt"
+    assert_absent "$home/state/modes-k3-$i.meta" "the halted mode=$mode dispatch wrote task metadata"
+  done
+  pass "fm-spawn: no delivery mode reaches a disposable copy of a registered project"
+}
+
+# The one thing that lifts it is the captain's own word, and it has to be on disk
+# rather than in whichever agent decided to proceed. The record carries his words,
+# because a grant with nothing he said is an assumption.
+test_only_the_captains_recorded_say_so_lifts_the_halt() {
+  local rec home proj fakebin out status
+  rec=$(make_home recorded-say-so master)
+  IFS='|' read -r home proj fakebin <<EOF
+$rec
+EOF
+  register_project "$home" proj no-mistakes-prod-only
+  git -C "$proj" checkout --quiet -b test
+  write_brief "$home" granted-k4 no-mistakes
+
+  out=$(run_authorize "$home" grant granted-k4 proj)
+  status=$?
+  [ "$status" -ne 0 ] || fail "a grant with none of the captain's words should exit non-zero"
+  assert_contains "$out" "--captain" "the empty grant did not say what was missing"
+  assert_absent "$home/state/granted-k4.isolated-authorized" \
+    "the refused grant still wrote a record"
+
+  out=$(run_authorize "$home" grant granted-k4 proj --captain "yes, do this one in a copy")
+  status=$?
+  [ "$status" -eq 0 ] || fail "recording the captain's say-so failed: $out"
+  assert_present "$home/state/granted-k4.isolated-authorized" "the grant wrote no record"
+  assert_grep "yes, do this one in a copy" "$home/state/granted-k4.isolated-authorized" \
+    "the record did not keep the captain's own words"
+
+  out=$(run_spawn "$home" "$fakebin" granted-k4 "$proj" claude --mode no-mistakes --yolo off)
+  assert_not_contains "$out" "HALTED" \
+    "the recorded say-so did not lift the halt"
+  assert_contains "$out" "on the captain's own recorded say-so" \
+    "the authorized dispatch did not say it was running on his recorded word"
+  assert_contains "$out" "fake tmux refused" \
+    "the authorized dispatch never got past the gate, so this case proves nothing"
+
+  # It is one piece of work on one project, never standing authority.
+  write_brief "$home" other-k4 no-mistakes
+  out=$(run_spawn "$home" "$fakebin" other-k4 "$proj" claude --mode no-mistakes --yolo off)
+  status=$?
+  [ "$status" -ne 0 ] || fail "one task's say-so should not authorize another task"
+  assert_contains "$out" "HALTED" "another task reused the first task's say-so"
+  pass "fm-spawn: only the captain's recorded say-so lifts the halt, for that one piece of work"
+}
+
+# A record that names another project is not this project's authorization, so it
+# is refused rather than read as close enough.
+test_a_say_so_for_another_project_does_not_carry() {
+  local rec home proj fakebin out status
+  rec=$(make_home wrong-project master)
+  IFS='|' read -r home proj fakebin <<EOF
+$rec
+EOF
+  register_project "$home" proj no-mistakes-prod-only
+  write_brief "$home" wrong-k5 no-mistakes
+  printf 'task=wrong-k5\nproject=some-other-project\ngranted=1\ncaptain=fine\n' \
+    > "$home/state/wrong-k5.isolated-authorized"
+
+  out=$(run_spawn "$home" "$fakebin" wrong-k5 "$proj" claude --mode no-mistakes --yolo off)
+  status=$?
+  [ "$status" -ne 0 ] || fail "a say-so naming another project should not authorize this one"
+  assert_contains "$out" "some-other-project" "the refusal did not name the project the say-so covers"
+  assert_absent "$home/state/wrong-k5.meta" "the refused dispatch wrote task metadata"
+
+  # Nor does a record that names the right project but another piece of work: the
+  # grant is per task, so a record that does not name this one is no record.
+  printf 'task=some-other-task\nproject=proj\ngranted=1\ncaptain=fine\n' \
+    > "$home/state/wrong-k5.isolated-authorized"
+  out=$(run_spawn "$home" "$fakebin" wrong-k5 "$proj" claude --mode no-mistakes --yolo off)
+  status=$?
+  [ "$status" -ne 0 ] || fail "a say-so naming another task should not authorize this one"
+  assert_contains "$out" "HALTED" "a say-so naming another task was read as this task's"
+  assert_absent "$home/state/wrong-k5.meta" "the refused dispatch wrote task metadata"
+  pass "fm-spawn: a say-so recorded for another project or another task does not carry"
+}
+
+# The disposable copy is still the right answer where it always was. A scout only
+# produces knowledge, so its throwaway copy is the point of a scout rather than a
+# way to ship around the gate, and a project the captain never registered is not
+# his working copy to protect - firstmate's own repo among them.
+test_scouts_and_unregistered_projects_still_get_a_disposable_copy() {
+  local rec home proj fakebin out
+  rec=$(make_home still-allowed master)
+  IFS='|' read -r home proj fakebin <<EOF
+$rec
+EOF
+  register_project "$home" proj no-mistakes-prod-only
+  git -C "$proj" checkout --quiet -b test
+
+  write_scout_brief "$home" scout-k6
+  out=$(run_spawn "$home" "$fakebin" scout-k6 "$proj" claude --scout)
+  assert_not_contains "$out" "HALTED" "a scout was refused its own disposable copy"
+  # Proves the case is not vacuous: the scout got past the gate and on to asking
+  # for a copy, rather than stopping earlier for some unrelated reason.
+  assert_contains "$out" "fake tmux refused" \
+    "the scout never got past the gate, so this case proves nothing"
+
+  register_project "$home" some-other-project
+  write_brief "$home" unreg-k6 no-mistakes
+  out=$(run_spawn "$home" "$fakebin" unreg-k6 "$proj" claude --mode no-mistakes --yolo off)
+  assert_not_contains "$out" "HALTED" \
+    "an unregistered project was refused its disposable copy"
+  assert_contains "$out" "fake tmux refused" \
+    "the unregistered project never got past the gate, so this case proves nothing"
+  pass "fm-spawn: scouts and unregistered projects still get their disposable copies"
+}
+
+# Promotion keeps the scout's own copy and changes the contract to one that ships,
+# so without the same gate it is the identical walk-around one step later:
+# dispatch as a scout, then promote.
+test_promoting_a_scout_on_a_registered_project_halts() {
+  local rec home proj fakebin out status
+  rec=$(make_home promote-registered master)
+  IFS='|' read -r home proj fakebin <<EOF
+$rec
+EOF
+  register_project "$home" proj no-mistakes-prod-only
+  git -C "$proj" checkout --quiet -b test
+  write_scout_brief "$home" promote-k7
+  {
+    printf 'window=firstmate:fm-promote-k7\n'
+    printf 'endpoint_task_id=promote-k7\n'
+    printf 'worktree=%s\n' "$TMP_ROOT/promote-registered/scratch"
+    printf 'project=%s\n' "$proj"
+    printf 'harness=claude\nkind=scout\nbackend=tmux\n'
+    printf 'spawn_gen=project-branch-test-promote-k7\n'
+  } > "$home/state/promote-k7.meta"
+
+  out=$(run_promote "$home" "$fakebin" promote-k7 --mode no-mistakes --yolo off)
+  status=$?
+  [ "$status" -ne 0 ] || fail "promoting a scout on a registered project should exit non-zero"
+  assert_contains "$out" "HALTED" "the promotion did not halt"
+  assert_contains "$out" "proj" "the halt did not name the project"
+  grep -qx 'kind=scout' "$home/state/promote-k7.meta" \
+    || fail "the halted promotion still flipped the task to a ship task"
+
+  # And the captain's own say-so lifts it here exactly as it does at dispatch.
+  run_authorize "$home" grant promote-k7 proj --captain "go ahead, promote it" >/dev/null
+  out=$(run_promote "$home" "$fakebin" promote-k7 --mode no-mistakes --yolo off)
+  status=$?
+  [ "$status" -eq 0 ] || fail "the recorded say-so did not let the promotion through: $out"
+  grep -qx 'kind=ship' "$home/state/promote-k7.meta" \
+    || fail "the authorized promotion did not flip the task to a ship task"
+  pass "fm-promote: promotion cannot walk around the gate, and the captain's say-so lifts it"
+}
+
 test_second_dispatch_into_an_occupied_directory_refuses
 test_a_project_back_on_its_default_branch_dispatches_again
 test_off_default_blocks_with_no_task_record_at_all
@@ -669,4 +962,11 @@ test_the_brief_stops_before_the_pull_request
 test_teardown_leaves_the_captains_directory_intact
 test_teardown_refuses_uncommitted_changes_and_never_discards_them
 test_orca_is_refused_for_the_project_workspace
+test_an_occupied_registered_project_halts_the_disposable_copy_too
+test_a_free_registered_project_still_refuses_the_disposable_copy
+test_no_delivery_mode_reaches_the_disposable_copy
+test_only_the_captains_recorded_say_so_lifts_the_halt
+test_a_say_so_for_another_project_does_not_carry
+test_scouts_and_unregistered_projects_still_get_a_disposable_copy
+test_promoting_a_scout_on_a_registered_project_halts
 echo "# all fm-project-branch tests passed"

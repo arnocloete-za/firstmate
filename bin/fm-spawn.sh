@@ -30,7 +30,13 @@
 #     isolated (every mode but project-branch) allocates a disposable copy of the
 #       project through `treehouse get` or Orca, resets it to origin's default
 #       branch tip, and returns it at teardown. The worker owns an fm/<id> branch
-#       inside it and nothing it does can reach the captain's checkout.
+#       inside it and nothing it does can reach the captain's checkout. It is NOT
+#       a fallback for a refused in-place dispatch: a fresh SHIP spawn aimed at
+#       one of the captain's registered projects is refused here unless he has
+#       authorized this exact piece of work for a disposable copy, recorded by
+#       bin/fm-isolated-authorize.sh. Scouts and unregistered projects are
+#       untouched by that gate; bin/fm-project-branch-lib.sh owns the line and the
+#       refusal wording.
 #     project (--mode project-branch) runs the worker in the project directory
 #       this spawn was passed, on a batch branch the captain owns, and allocates,
 #       resets, and returns nothing. bin/fm-project-branch-lib.sh is the single
@@ -2037,6 +2043,18 @@ if [ "$WORKSPACE" = project ]; then
   # overwrite; here an existing file at one of those paths is the captain's, so
   # the spawn refuses rather than clobbering it.
   fm_project_branch_require_no_wiring_conflict "$HARNESS" "$PROJ_ABS" "$STATE" "$ID" || exit 1
+fi
+
+# The other side of that same choice, and the reason the refusals above are worth
+# anything: a registered project's SHIP work may not be sent to a disposable copy
+# just because the in-place dispatch refused. The guard is in the same owner
+# (bin/fm-project-branch-lib.sh) and runs in the same place - before any endpoint,
+# allocation, or durable record exists - so a refusal here also leaves nothing
+# behind. A relaunch adopts a directory rather than allocating one, and a scout's
+# throwaway copy is the point of a scout, so neither is gated.
+if [ "$WORKSPACE" = isolated ] && [ "$KIND" = ship ] && [ "$RELAUNCH" -eq 0 ]; then
+  fm_project_branch_require_isolation_authorized \
+    "$FM_ROOT/bin/fm-project-mode.sh" "$STATE" "$ID" "$PROJ_ABS" "$PROJ_NAME" || exit 1
 fi
 
 real_path_or_raw() {  # <path>

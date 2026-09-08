@@ -8,8 +8,10 @@
 # yolo are resolved by firstmate at intake and passed explicitly to
 # bin/fm-brief.sh, bin/fm-spawn.sh, and bin/fm-promote.sh (AGENTS.md section 7).
 # The consumers are bin/fm-fleet-sync.sh (skip local-only clones),
-# bin/fm-home-seed.sh (refuse local-only seeding, run no-mistakes init), and
-# bin/fm-spawn.sh's advisory registry-deviation notice.
+# bin/fm-home-seed.sh (refuse local-only seeding, run no-mistakes init),
+# bin/fm-spawn.sh's advisory registry-deviation notice, and - through
+# --registered below - the disposable-copy guard in
+# bin/fm-project-branch-lib.sh.
 #
 # Registry line format (data/projects.md):
 #   - <name> - <desc> (added <date>)                  -> no-mistakes off  (legacy default)
@@ -49,9 +51,19 @@
 # --raw prints the registered annotation unmapped, so a caller that must tell a
 # conditional policy apart from a flat mode sees "no-mistakes-prod-only" itself.
 #
+# --registered answers a different question: is this one of the captain's OWN
+# registered projects at all? It prints nothing and exits 0 when the registry has
+# a line for <project-name>, 1 when it does not. The posture forms above cannot
+# answer it, because they fall back to the standing default for an unknown project
+# and so report every path on disk as if the captain had registered it. The
+# workspace guard in bin/fm-project-branch-lib.sh is its caller: a disposable copy
+# of a registered project is the captain's call, and a project he never registered
+# is not his to guard.
+#
 # An unknown/missing project or unknown mode falls back to "no-mistakes off" and warns
 # to stderr, so a typo never silently drops the gate.
 # Usage: fm-project-mode.sh [--raw] <project-name>
+#        fm-project-mode.sh --registered <project-name>
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -60,16 +72,25 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 REG="$DATA/projects.md"
 RAW=0
-if [ "${1:-}" = "--raw" ]; then
-  RAW=1
-  shift
-fi
-NAME=${1:?usage: fm-project-mode.sh [--raw] <project-name>}
+REGISTERED_ONLY=0
+case "${1:-}" in
+  --raw) RAW=1; shift ;;
+  --registered) REGISTERED_ONLY=1; shift ;;
+esac
+NAME=${1:?usage: fm-project-mode.sh [--raw|--registered] <project-name>}
 
 if [ ! -f "$REG" ]; then
+  # No registry means no registered project, which is a fact rather than a
+  # fallback; only the posture forms warn and default.
+  [ "$REGISTERED_ONLY" -eq 0 ] || exit 1
   echo "warn: no registry at $REG; defaulting $NAME to no-mistakes off" >&2
   echo "no-mistakes off"
   exit 0
+fi
+
+if [ "$REGISTERED_ONLY" -eq 1 ]; then
+  awk -v n="$NAME" '$1=="-" && $2==n { found=1; exit } END { exit found?0:1 }' "$REG"
+  exit $?
 fi
 
 # awk emits "<mode> <yolo>" (one line) or nothing if the project is absent.

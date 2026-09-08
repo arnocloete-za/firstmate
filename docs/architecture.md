@@ -229,7 +229,13 @@ Because the model owns nothing, it allocates, resets, detaches, deletes, and ref
 Teardown's landed-work gate is therefore replaced by an uncommitted-changes gate, since commits are already durable in the captain's own repo while a dirty tree means an interrupted edit or the captain working there right now.
 A task's metadata records the model as `workspace=project` with its `branch=`; an absent `workspace=` means the isolated copy, so records predating the model keep their meaning.
 `backend=orca` is refused for it, because an Orca-allocated worktree is the very thing the model does without.
-`tests/fm-project-branch.test.sh` owns the portable regression coverage for those refusals.
+
+Those refusals protect nothing on their own, because dispatching the same work with any other delivery mode was still legal and allocated a disposable copy - the exact thing the model replaces.
+So the other side of the choice refuses too: a fresh ship dispatch aimed at one of the captain's own registered projects, and a scout promotion on one, are both refused unless he has authorized that one piece of work for a disposable copy.
+The line is registration plus shipping: a project he never registered is not his working copy to protect, and a scout produces a report rather than a project change, so investigation keeps the disposable copy that is the point of a scout.
+The authorization is a per-task record written by `bin/fm-isolated-authorize.sh` and carrying the captain's own words, never a dispatch flag, because a flag is the walk-around being closed - it would live in whichever agent chose it.
+It names one task and one project, and teardown removes it with the task.
+`bin/fm-project-branch-lib.sh` owns both directions of that decision and the refusal wording, and `tests/fm-project-branch.test.sh` owns the portable regression coverage for every refusal above.
 
 ## No-mistakes gate authority boundary
 

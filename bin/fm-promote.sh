@@ -25,6 +25,11 @@
 # promotion keeps the scout's own scratch copy, while a project-branch task works
 # in the project's own directory on the captain's batch branch. That work is a
 # fresh dispatch, not a promotion.
+# For the same reason, promoting a scout on one of the captain's REGISTERED
+# projects is refused unless he has authorized this piece of work for a disposable
+# copy (bin/fm-isolated-authorize.sh): promotion ships from the scout's own copy,
+# so without that gate it would be the walk-around the dispatch gate closes.
+# bin/fm-project-branch-lib.sh owns the rule and its refusal wording.
 # Usage: fm-promote.sh <task-id> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off>
 set -eu
 
@@ -50,6 +55,10 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 . "$SCRIPT_DIR/fm-secondmate-parent-lib.sh"
 # shellcheck source=bin/fm-secondmate-registry-lib.sh
 . "$SCRIPT_DIR/fm-secondmate-registry-lib.sh"
+# shellcheck source=bin/fm-tangle-lib.sh
+. "$SCRIPT_DIR/fm-tangle-lib.sh"
+# shellcheck source=bin/fm-project-branch-lib.sh
+. "$SCRIPT_DIR/fm-project-branch-lib.sh"
 
 MODE=
 YOLO=
@@ -145,6 +154,20 @@ if ! fm_backlog_record_present "$META" "task record" "$STATE"; then
   exit 1
 fi
 grep -qx 'kind=scout' "$META" || { echo "error: task $ID is not a scout task (kind=scout not in meta)" >&2; exit 1; }
+
+# A scout's copy is disposable BECAUSE a scout only produces knowledge. Promotion
+# turns it into work that ships, and a scout on one of the captain's registered
+# projects would otherwise reach a disposable copy of it by this door instead of
+# the dispatch flag - the same walk-around, one step later. So the promotion asks
+# the same question the dispatch asks, from the same owner.
+PROMOTE_PROJECT_DIR=$(fmx_meta_get "$META" project)
+if [ -n "$PROMOTE_PROJECT_DIR" ]; then
+  if ! fm_project_branch_require_isolation_authorized \
+    "$FM_ROOT/bin/fm-project-mode.sh" "$STATE" "$ID" "$PROMOTE_PROJECT_DIR"; then
+    echo "This scout keeps its own copy, so promoting it would ship from one. Dispatch the implementation in the project's own directory instead, or record his say-so for this piece of work." >&2
+    exit 1
+  fi
+fi
 
 SCOUT_BRIEF="$DATA/$ID/brief.md"
 if fm_brief_task_placeholders_present "$SCOUT_BRIEF"; then
