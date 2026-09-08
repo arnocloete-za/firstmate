@@ -115,8 +115,29 @@ that same owner.
 That is why a card and a row can never disagree about what #7 is, and why the
 number a task's own terminal is named after is the same number again.
 
-Every project card is a fixed size, and the last five commits appear on hover in
-an overlay, so the grid cannot reflow and hovering cannot resize a card.
+Every project card is a fixed size, and clicking one opens that project's own
+overlay above the board, so the grid never reflows and nothing resizes a card.
+
+The overlay holds everything the card holds plus the three things only it
+shows: the project's last five commits, its latest version tag, and its latest
+release note.
+It replaced the hover reveal the cards used to carry rather than joining it,
+because two ways to read the same five commits is the lostness the one-page rule
+exists to prevent.
+
+That overlay reaches nothing.
+Every word in it is baked into the page when the command runs, read from the
+local checkout exactly like the cards, so a release note this clone does not
+carry reads as absent rather than being looked up - a request per project would
+wreck the watch and break the read-only promise.
+The generator's header owns which sources a release note comes from and why a
+tag's own annotation is not one of them.
+
+The two version facts are shown independently because they genuinely disagree:
+a project's newest release note and its newest local tag are separate records,
+and forcing them to agree would have to hide one.
+A `fm-task/*` tag is never shown as a version - that is firstmate's own
+bookkeeping, and presenting one as the captain's release would mislead him.
 
 ## Live work
 

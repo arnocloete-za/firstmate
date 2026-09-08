@@ -100,6 +100,43 @@
 // ("Human views must render this output instead of parsing state files again").
 // This command never fetches, pulls, commits, steers, tears down, or merges.
 //
+// The project detail overlay
+// --------------------------
+// Clicking a project card opens that project's own overlay: everything the card
+// already shows, plus its last five commits, its latest version tag, and its
+// latest release note. It replaces the hover reveal the cards used to carry.
+//
+// The overlay adds NO new reach: every word in it is baked into the page when
+// this command runs, out of the local checkout, exactly like the cards. Nothing
+// is fetched from a forge - a network call per project would wreck the watch and
+// break the read-only promise - so a release note this repository does not
+// carry is reported as absent rather than looked up.
+//
+// The two version-ish facts are read and reported INDEPENDENTLY, because they
+// genuinely disagree in this fleet: spock's newest release note is v3.9.0 while
+// its newest local tag is v3.6.1. Forcing them to agree would have to hide one
+// of them, so the overlay shows each for what it is.
+//
+// Latest version tag: the highest version-like tag (`v1.2.3`, `1.2`), never a
+// `fm-task/*` tag - those are firstmate's own bookkeeping and presenting one as
+// the captain's release would be actively misleading. A repository whose only
+// tags are that bookkeeping says it has no VERSION tags; one with no tags at all
+// says it has no tags. Both are permanent states here, so neither may render as
+// blank or as an error.
+//
+// Latest release note, first source that exists (see RELEASE_NOTE_SOURCES):
+//   1. release_notes/v<version>.md, highest version, `template.md` excluded.
+//      This is the captain's own house convention: nine of his projects keep
+//      per-version notes there, and morpheus's root RELEASE_NOTES.md is an index
+//      that points INTO it, which is why the directory outranks the root file.
+//   2. a root RELEASE_NOTES.md / CHANGELOG.md / CHANGES.md / NEWS.md / HISTORY.md.
+//   3. nothing - reported as no release note, never as an empty panel.
+// A tag's own annotation is deliberately NOT a source. It reads like one, but
+// every annotated tag in this fleet carries Mercurial-conversion boilerplate
+// ("Added tag v4.1.1 for changeset b6bd36f6"), and a lightweight tag's
+// "message" is just the tagged commit's subject wearing a release note's
+// clothes. Both would put noise under a heading the captain reads as his notes.
+//
 // Project ordering is REGISTRY ORDER, and the number on each card is the one
 // bin/fm-task-number-lib.sh derives from that project's position within ITS OWN
 // board. The captain reads these numbers aloud, so a number must not move when
@@ -121,7 +158,7 @@
 // contract as the rest of bin/ (tests only).
 
 import { execFile } from 'node:child_process';
-import { mkdir, readFile, writeFile, rename, unlink } from 'node:fs/promises';
+import { mkdir, readdir, readFile, writeFile, rename, unlink } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -360,7 +397,114 @@ async function readRegistry(numbering) {
   return projects;
 }
 
-// --- 2. per-project git health (all projects concurrently) -----------------
+// --- 2a. the latest version tag --------------------------------------------
+// `fm-task/*` is firstmate's OWN bookkeeping namespace, not the captain's
+// releases, so it can never answer "what version is this project on" - one of
+// his projects has such a tag and no other, and showing it would name
+// firstmate's internal bookkeeping as his release.
+const isBookkeepingTag = (ref) => ref.startsWith('fm-task/');
+
+// A version-like tag: optional `v`, then digits and dots. Anything else is
+// still a real tag the captain may have written, just not a version, so it is
+// kept and reported as a tag rather than silently dropped or called a version.
+const VERSION_TAG = /^v?\d+(\.\d+)*$/i;
+const versionKey = (ref) => ref.replace(/^v/i, '').split('.').map(Number);
+function compareVersions(a, b) {
+  const left = versionKey(a);
+  const right = versionKey(b);
+  for (let i = 0; i < Math.max(left.length, right.length); i += 1) {
+    const diff = (left[i] || 0) - (right[i] || 0);
+    if (diff) return diff;
+  }
+  return 0;
+}
+
+// One `for-each-ref` per project answers this whole panel; the sort and the
+// filtering happen here because a repository has tens of tags, not thousands.
+async function latestTag(path) {
+  // `^` separates the two fields because git rejects it inside a ref name and
+  // an ISO date never contains one - and unlike `log`, for-each-ref does not
+  // expand a `%x1f` escape, it emits those four characters literally.
+  const raw = await gitOrNull(path, [
+    'for-each-ref', '--format=%(refname:short)^%(creatordate:iso-strict)', 'refs/tags',
+  ]);
+  if (raw === null) return { kind: 'unreadable' };
+  const tags = raw.split('\n').filter(Boolean)
+    .map((row) => {
+      const cut = row.indexOf('^');
+      return cut < 0 ? { ref: row, date: '' } : { ref: row.slice(0, cut), date: row.slice(cut + 1) };
+    })
+    .filter((tag) => tag.ref);
+  if (tags.length === 0) return { kind: 'none' };
+  const usable = tags.filter((tag) => !isBookkeepingTag(tag.ref));
+  // Every tag it has is firstmate's own: the captain has no version here, and
+  // saying so plainly beats both a blank panel and a bookkeeping ref.
+  if (usable.length === 0) return { kind: 'bookkeeping-only' };
+  const versions = usable.filter((tag) => VERSION_TAG.test(tag.ref));
+  if (versions.length > 0) {
+    versions.sort((a, b) => compareVersions(b.ref, a.ref));
+    return { kind: 'version', ...versions[0] };
+  }
+  // Tags that are not versions still get reported, newest first and labelled
+  // as tags, so an unusual naming scheme shows up instead of reading as none.
+  // An unreadable date sorts as the oldest rather than as NaN, which would make
+  // every comparison false and leave the pick to whatever order git listed.
+  const when = (tag) => (Number.isNaN(Date.parse(tag.date)) ? 0 : Date.parse(tag.date));
+  usable.sort((a, b) => when(b) - when(a));
+  return { kind: 'tag', ...usable[0] };
+}
+
+// --- 2b. the latest release note -------------------------------------------
+// Ordered by how authoritative the source is in this fleet, not by how easy it
+// is to read: the per-version directory wins because the one project carrying
+// both keeps its root file as an index pointing into that directory.
+const RELEASE_NOTE_DIR = 'release_notes';
+const ROOT_NOTE_FILES = ['release_notes.md', 'changelog.md', 'changes.md', 'news.md', 'history.md'];
+// A note is displayed, not stored, so an unbounded one would bloat every page
+// this command writes. The largest in this fleet is 11KB; this leaves room and
+// still says plainly when it has cut something off.
+const NOTE_LIMIT = 20000;
+const NOTE_FILE = /^v?\d+(\.\d+)*\.md$/i;
+
+async function readNote(file, title, source) {
+  const text = await readFile(file, 'utf8').catch(() => null);
+  if (text === null || text.trim() === '') return null;
+  const clipped = text.length > NOTE_LIMIT;
+  return {
+    title, source, clipped, body: clipped ? text.slice(0, NOTE_LIMIT) : text,
+  };
+}
+
+async function latestReleaseNote(path) {
+  // One readdir of the root answers both questions - is there a notes
+  // directory, and is there a root notes file - without a subprocess and
+  // without caring how either is capitalised.
+  const entries = await readdir(path, { withFileTypes: true }).catch(() => null);
+  if (entries === null) return null;
+  const dir = entries.find((e) => e.isDirectory() && e.name.toLowerCase() === RELEASE_NOTE_DIR);
+  if (dir) {
+    const names = await readdir(join(path, dir.name)).catch(() => []);
+    // `template.md` is the blank a new note is written from, never a release.
+    const versions = names.filter((n) => NOTE_FILE.test(n));
+    if (versions.length > 0) {
+      versions.sort((a, b) => compareVersions(b.replace(/\.md$/i, ''), a.replace(/\.md$/i, '')));
+      const pick = versions[0];
+      const note = await readNote(
+        join(path, dir.name, pick), pick.replace(/\.md$/i, ''), `${dir.name}/${pick}`,
+      );
+      if (note) return note;
+    }
+  }
+  for (const wanted of ROOT_NOTE_FILES) {
+    const hit = entries.find((e) => e.isFile() && e.name.toLowerCase() === wanted);
+    if (!hit) continue;
+    const note = await readNote(join(path, hit.name), hit.name, hit.name);
+    if (note) return note;
+  }
+  return null;
+}
+
+// --- 2c. per-project git health (all projects concurrently) ----------------
 async function projectHealth({ name, path, number }) {
   // number rides through untouched: it is the captain's handle for the project,
   // so nothing a git read discovers may change it.
@@ -368,11 +512,16 @@ async function projectHealth({ name, path, number }) {
   if (!existsSync(path) || !(await gitOrNull(path, ['rev-parse', '--is-inside-work-tree']))) {
     return { ...base, available: false, reason: 'no git checkout at this path' };
   }
-  const [status, head, defaultBranch, log] = await Promise.all([
+  // The overlay's two extra reads join this same batch rather than following
+  // it, so the detail behind a card costs one more concurrent git call and a
+  // couple of directory reads - never a round trip to a forge.
+  const [status, head, defaultBranch, log, tag, note] = await Promise.all([
     gitOrNull(path, ['status', '--porcelain']),
     gitOrNull(path, ['symbolic-ref', '--quiet', '--short', 'HEAD']),
     bashFnOrEmpty('fm-tangle-lib.sh', 'fm_default_branch', path),
     gitOrNull(path, ['log', '-n', '5', '--format=%h%x1f%ad%x1f%an%x1f%s', '--date=iso-strict']),
+    latestTag(path),
+    latestReleaseNote(path),
   ]);
   const short = head ? null : await gitOrNull(path, ['rev-parse', '--short', 'HEAD']);
   const branch = head ? head.trim() : `detached@${(short || 'unknown').trim()}`;
@@ -388,6 +537,8 @@ async function projectHealth({ name, path, number }) {
     defaultBranch: defaultBranch || null,
     onDefault: defaultBranch ? branch === defaultBranch : null,
     commits,
+    tag,
+    note,
   };
 }
 
@@ -677,17 +828,76 @@ a { color: var(--info); }
 .commit .subject { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .reason { font-size: .82rem; color: var(--text-muted); }
 
-/* The last five commits appear on hover, in an overlay - the card itself never
-   changes size, so the grid cannot reflow under the cursor. */
-.history {
-  display: none; position: absolute; left: -1px; right: -1px; top: 100%; z-index: 5;
-  background: var(--bg-raised); border: 1px solid var(--border-strong); border-radius: 6px;
-  padding: 8px 12px; box-shadow: 0 6px 18px rgba(0,0,0,.18);
+/* A card that has detail behind it is a real button, so it is reachable and
+   openable from the keyboard with no key handling of our own. It must still
+   read as exactly the same card: the reset below removes everything the button
+   element brings and adds nothing but the cursor and the focus ring. */
+button.card {
+  display: block; width: 100%; text-align: left; font: inherit; color: inherit;
+  cursor: pointer; appearance: none;
 }
-.card:hover .history, .card:focus-within .history { display: block; }
-.history li { font-size: .78rem; color: var(--text-secondary); margin-bottom: 3px; }
+button.card:hover { border-color: var(--border-strong); background: var(--bg-raised); }
+button.card:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+
+/* The detail overlay: one dialog per project, above the grid rather than in it,
+   so opening one cannot resize a card or reflow the board behind it. */
+dialog.detail {
+  width: min(880px, 92vw); max-height: 88vh; padding: 0; overflow: hidden;
+  background: var(--bg-surface); color: var(--text-primary);
+  border: 1px solid var(--border-strong); border-radius: 8px;
+  box-shadow: 0 18px 48px rgba(0,0,0,.32);
+}
+dialog.detail::backdrop { background: rgba(0,0,0,.45); }
+.detail-inner { display: flex; flex-direction: column; max-height: 88vh; }
+.detail-head {
+  display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: baseline;
+  padding: 14px 18px; border-bottom: 1px solid var(--border-strong); background: var(--bg-raised);
+}
+.detail-head .num { font-size: 1.05rem; }
+.detail-head .proj-name { font-size: 1.05rem; }
+.detail-body { padding: 4px 18px 18px; overflow-y: auto; }
+button.detail-close {
+  font: inherit; font-size: .78rem; cursor: pointer; padding: 3px 10px;
+  background: var(--bg-surface); color: var(--text-secondary);
+  border: 1px solid var(--border-strong); border-radius: 3px;
+}
+button.detail-close:hover { color: var(--text-primary); }
+.panel { margin-top: 16px; }
+.panel > h3 {
+  font-size: .74rem; font-weight: 700; text-transform: uppercase; letter-spacing: .06em;
+  color: var(--text-muted); margin: 0 0 8px; padding-bottom: 5px;
+  border-bottom: 1px solid var(--border);
+}
+.detail-path { font-family: var(--font-mono); font-size: .74rem; color: var(--text-muted); }
+.version { font-family: var(--font-mono); font-size: 1.15rem; font-weight: 700; }
+.version-when { font-family: var(--font-mono); font-size: .78rem; color: var(--text-muted); }
+.note-source { font-family: var(--font-mono); font-size: .74rem; color: var(--text-muted); }
+/* The commit list is the reveal the cards used to carry on hover, now with room
+   to show a whole subject rather than one clipped line. */
 .history ol { margin: 0; padding-left: 0; list-style: none; }
+.history li {
+  font-size: .82rem; color: var(--text-secondary); padding: 5px 0;
+  border-bottom: 1px solid var(--border);
+}
+.history li:last-child { border-bottom: 0; }
 .history .hash { font-family: var(--font-mono); color: var(--text-muted); }
+
+/* The release note is the project's own markdown, rendered small and plain. */
+.note-body { font-size: .85rem; color: var(--text-secondary); }
+.note-body h4 {
+  font-size: .88rem; font-weight: 700; color: var(--text-primary); margin: 14px 0 6px;
+}
+.note-body h4:first-child { margin-top: 4px; }
+.note-body p { margin: 6px 0; }
+.note-body ul { margin: 6px 0; padding-left: 18px; }
+.note-body li { margin: 3px 0; }
+.note-body li ul { margin: 2px 0; }
+.note-body code {
+  font-family: var(--font-mono); font-size: .92em;
+  background: var(--bg-raised); border: 1px solid var(--border); border-radius: 3px; padding: 0 3px;
+}
+.note-body strong { color: var(--text-primary); }
+.note-clipped { font-size: .78rem; color: var(--text-muted); font-style: italic; margin-top: 10px; }
 .empty { color: var(--text-muted); font-style: italic; }
 `;
 
@@ -725,6 +935,24 @@ for (const button of document.querySelectorAll('button.copy')) {
       setTimeout(() => { button.textContent = 'copy terminal command'; }, 1500);
     });
   });
+}
+// Opening a project's detail. showModal() is what makes Escape close it, keeps
+// the tab order inside it, and hands focus back to the card on the way out, so
+// none of that is written here. The card is already a button, so the keyboard
+// reaches it with no key handling of our own.
+for (const card of document.querySelectorAll('button.card[data-detail]')) {
+  const dialog = document.getElementById(card.dataset.detail);
+  if (!dialog) continue;
+  card.addEventListener('click', () => dialog.showModal());
+}
+for (const dialog of document.querySelectorAll('dialog.detail')) {
+  // A click that lands on the dialog element itself landed on the backdrop:
+  // every visible part of the overlay is inside .detail-inner.
+  dialog.addEventListener('click', (event) => {
+    if (event.target === dialog) dialog.close();
+  });
+  const close = dialog.querySelector('button.detail-close');
+  if (close) close.addEventListener('click', () => dialog.close());
 }
 `;
 
@@ -819,6 +1047,101 @@ function renderLive(live, observedAt) {
   return `${summary}\n${rows}`;
 }
 
+// The release note is markdown the captain wrote, and it is rendered as the
+// small subset his notes actually use: headings, bullets one level deep, bold,
+// and inline code. Everything is HTML-escaped BEFORE a single tag is added, so
+// the only markup that can reach the page is the fixed set introduced here -
+// there is no path from a note's bytes to an element of its own choosing.
+function renderNoteBody(markdown) {
+  const inline = (text) => esc(text)
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/`([^`]+)`/g, '<code>$1</code>');
+  const out = [];
+  let list = null;  // 0 = top level open, 1 = a nested list is open inside it
+  const closeList = () => {
+    while (list !== null && list >= 0) {
+      out.push('</ul>');
+      list = list > 0 ? list - 1 : null;
+    }
+  };
+  for (const raw of markdown.split('\n')) {
+    const line = raw.replace(/\s+$/, '');
+    if (line.trim() === '') { closeList(); continue; }
+    const heading = /^(#{1,6})\s+(.*)$/.exec(line);
+    if (heading) {
+      closeList();
+      out.push(`<h${heading[1].length <= 2 ? 4 : 5}>${inline(heading[2])}</h${heading[1].length <= 2 ? 4 : 5}>`);
+      continue;
+    }
+    const bullet = /^(\s*)[-*]\s+(.*)$/.exec(line);
+    if (bullet) {
+      const depth = bullet[1].length >= 2 ? 1 : 0;
+      if (list === null) { out.push('<ul>'); list = 0; }
+      if (depth > list) { out.push('<ul>'); list = 1; } else if (depth < list) { out.push('</ul>'); list = 0; }
+      out.push(`<li>${inline(bullet[2])}</li>`);
+      continue;
+    }
+    closeList();
+    out.push(`<p>${inline(line.trim())}</p>`);
+  }
+  closeList();
+  return out.join('\n');
+}
+
+// The version panel. Every state here is one a real project in this fleet is
+// permanently in, so none of them may render blank: two projects have no tags
+// at all and one has nothing but firstmate's own bookkeeping.
+function renderVersion(tag) {
+  if (!tag || tag.kind === 'unreadable') {
+    return '<div class="empty">Could not read this project\'s tags.</div>';
+  }
+  if (tag.kind === 'none') return '<div class="empty">No tags yet.</div>';
+  if (tag.kind === 'bookkeeping-only') return '<div class="empty">No version tags yet.</div>';
+  return `<div><span class="version">${esc(tag.ref)}</span>`
+    + (tag.kind === 'tag' ? ' <span class="note-source">(not a version number)</span>' : '')
+    + `</div>\n<div class="version-when">tagged ${esc(ago(tag.date))}</div>`;
+}
+
+function renderNote(note) {
+  if (!note) {
+    return '<div class="empty">No release notes in this repository.</div>';
+  }
+  return `<div class="note-source">${esc(note.source)}</div>
+    <div class="note-body">${renderNoteBody(note.body)}</div>`
+    + (note.clipped ? '\n    <div class="note-clipped">Shortened here - open the file for the rest.</div>' : '');
+}
+
+function renderCommits(commits) {
+  if (commits.length === 0) return '<div class="empty">No commits yet.</div>';
+  return `<div class="history"><ol>${commits.map((c) => (
+    `<li><span class="hash">${esc(c.hash)} ${esc(ago(c.date))}</span> · ${esc(c.author)}<br />${esc(c.subject)}</li>`
+  )).join('')}</ol></div>`;
+}
+
+// One dialog per project, carrying everything its card carries plus the three
+// things only the overlay shows. It is a native <dialog>, so Escape closes it,
+// focus is trapped while it is open and handed back to the card afterwards, and
+// none of that is ours to reimplement.
+function renderDetail(project, id, chips, commit) {
+  return `<dialog class="detail" id="${esc(id)}" aria-label="${esc(project.name)}">
+  <div class="detail-inner">
+    <div class="detail-head">
+      <span class="num">${project.number ?? '--'}</span>
+      <span class="proj-name">${esc(project.name)}</span>
+      <button type="button" class="detail-close">close</button>
+    </div>
+    <div class="detail-body">
+      <div class="chips">${chips}</div>
+      ${commit}
+      <div class="detail-path">${esc(project.path)}</div>
+      <div class="panel"><h3>Latest version tag</h3>${renderVersion(project.tag)}</div>
+      <div class="panel"><h3>Last 5 commits</h3>${renderCommits(project.commits)}</div>
+      <div class="panel"><h3>Latest release note</h3>${renderNote(project.note)}</div>
+    </div>
+  </div>
+</dialog>`;
+}
+
 function renderProjects(projects) {
   if (projects.length === 0) return '<div class="empty">No projects registered.</div>';
   const uncommitted = projects.filter((p) => p.available && !p.clean).length;
@@ -827,12 +1150,16 @@ function renderProjects(projects) {
   const summary = `<div class="summary"><b>${projects.length}</b> projects`
     + ` · <b>${uncommitted}</b> uncommitted · <b>${offDefault}</b> off default branch`
     + (unavailable ? ` · <b>${unavailable}</b> unavailable` : '') + '</div>';
-  const cards = projects.map((project) => {
+  const details = [];
+  const cards = projects.map((project, index) => {
     // The captain's own number for this project, as its owner writes it. A
     // project the scheme cannot number shows that plainly rather than borrowing
     // its neighbour's position, because a wrong number is worse than none.
     const num = project.number ?? '--';
     if (!project.available) {
+      // Nothing is readable behind an unavailable project, so its card stays a
+      // plain card: an overlay of three empty panels would be worse than the
+      // reason the card already gives.
       return `<div class="card unavailable">
   <div class="card-head"><span class="num">${num}</span><span class="proj-name">${esc(project.name)}</span></div>
   <div class="reason">${esc(project.reason)}</div>
@@ -853,18 +1180,17 @@ function renderProjects(projects) {
     <span class="subject">${esc(last.subject)}</span>
   </div>`
       : '<div class="reason">no commits</div>';
-    const history = project.commits.length > 1
-      ? `<div class="history"><ol>${project.commits.map((c) => (
-        `<li><span class="hash">${esc(c.hash)} ${esc(ago(c.date))}</span> ${esc(c.subject)}</li>`
-      )).join('')}</ol></div>`
-      : '';
-    return `<div class="${classes('card', flag)}" tabindex="0">
+    // The card itself is unchanged - same number, same chips, same one commit.
+    // All it gains is being a button that opens its own detail overlay.
+    const id = `detail-${index + 1}`;
+    details.push(renderDetail(project, id, chips, commit));
+    return `<button type="button" class="${classes('card', flag)}" data-detail="${id}" aria-haspopup="dialog">
   <div class="card-head"><span class="num">${num}</span><span class="proj-name">${esc(project.name)}</span></div>
   <div class="chips">${chips}</div>
-  ${lines(commit, history)}
-</div>`;
+  ${commit}
+</button>`;
   }).join('\n');
-  return `${summary}\n<div class="grid">\n${cards}\n</div>`;
+  return `${summary}\n<div class="grid">\n${cards}\n</div>\n${details.join('\n')}`;
 }
 
 function page({ projects, live, generatedAt, observedAt, renderedAt, contentHash, dueBy }) {

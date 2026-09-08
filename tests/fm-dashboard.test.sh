@@ -35,13 +35,26 @@ generate() {  # <extra-args...>
 }
 
 # card_in <page> <n>: print the nth project card's markup (1-based, page order).
+# A card with detail behind it is a <button> and one with none is a <div>, and
+# the block ends at its own closing tag - the detail overlays are rendered after
+# the grid, so a card must never be read as running to the end of the page.
 card_in() {  # <page> <n>
   awk -v want="$2" '
-    /^<div class="card[ "]/ { seen++ }
+    /^<button type="button" class="card[ "]/ || /^<div class="card[ "]/ { seen++ }
     seen == want { print }
-    seen > want { exit }
+    seen == want && (/^<\/button>$/ || /^<\/div>$/) { exit }
   ' "$1"
 }
+
+# detail_in <page> <name>: print the detail overlay belonging to that project.
+detail_in() {  # <page> <name>
+  awk -v name="$2" '
+    $0 ~ ("^<dialog class=\"detail\" id=\"[^\"]*\" aria-label=\"" name "\">") { inside = 1 }
+    inside { print }
+    inside && /^<\/dialog>$/ { exit }
+  ' "$1"
+}
+detail() { detail_in "$PAGE" "$1"; }  # <name>
 
 # row_in <page> <task-id>: print the live row carrying that task id.
 row_in() {  # <page> <id>
@@ -147,14 +160,157 @@ card 4 | grep -q 'no git checkout at this path' \
   || fail "an unavailable project should say why: $(card 4)"
 pass "each card reports cleanliness, its current branch against that repo's own default, and its last commit"
 
-# --- one commit on the card, five on hover --------------------------------
+# --- one commit on the card, the rest behind a click ----------------------
 [ "$(card 1 | grep -o 'class="subject"' | wc -l)" -eq 1 ] \
   || fail "a card body should show exactly one commit: $(card 1)"
-[ "$(card 1 | sed -n '/class="history"/,$p' | grep -o '<li>' | wc -l)" -eq 5 ] \
-  || fail "the hover history should carry the last five commits: $(card 1)"
 card 1 | grep -q 'commit number 6' \
   || fail "the card should show the newest commit: $(card 1)"
-pass "one commit shows on the card and the last five appear in the hover history"
+# The hover reveal is REPLACED, not kept alongside the overlay: two ways to see
+# the same five commits is exactly what the captain asked to be rid of.
+card 1 | grep -q 'class="history"' \
+  && fail "the commit history should no longer sit inside the card: $(card 1)"
+grep -q '\.card:hover \.history' "$PAGE" \
+  && fail "the hover reveal should be gone, not merely emptied"
+pass "the card still shows one commit, and the hover reveal is gone rather than kept beside the overlay"
+
+# --- clicking a card opens that project's own overlay ---------------------
+# Every card with something behind it is a real <button>, which is what makes it
+# reachable and openable from the keyboard without any key handling of our own.
+[ "$(grep -c '^<button type="button" class="card' "$PAGE")" -eq 3 ] \
+  || fail "every available project should be a clickable card: $(grep -c '^<button type="button" class="card' "$PAGE")"
+[ "$(grep -c '^<dialog class="detail"' "$PAGE")" -eq 3 ] \
+  || fail "each clickable card should have exactly one overlay behind it"
+for name in alpha bravo charlie; do
+  detail "$name" | grep -q "aria-label=\"$name\"" \
+    || fail "$name should have its own overlay"
+done
+# An unavailable project has nothing readable behind it, so it stays a plain
+# card rather than offering an overlay of three empty panels.
+card 4 | grep -q '^<div class="card unavailable"' \
+  || fail "an unavailable project should not become a clickable card: $(card 4)"
+detail delta | grep -q 'dialog' \
+  && fail "an unavailable project should not get an overlay"
+grep -q 'dialog.showModal()' "$PAGE" \
+  || fail "the overlay must open as a modal dialog, which is what makes Escape close it"
+grep -q 'if (event.target === dialog) dialog.close()' "$PAGE" \
+  || fail "clicking outside the overlay must close it"
+grep -q 'button.detail-close' "$PAGE" \
+  || fail "the overlay must carry a close control of its own"
+pass "a project card is a keyboard-reachable button that opens its own modal overlay, dismissable by Escape, backdrop, or its close control"
+
+# --- the overlay carries the card's information plus the five commits -----
+alpha_detail=$(detail alpha)
+printf '%s' "$alpha_detail" | grep -q '>alpha<'   || fail "the overlay should name the project: $alpha_detail"
+printf '%s' "$alpha_detail" | grep -q 'class="num">01<' \
+  || fail "the overlay should carry the captain's number for the project: $alpha_detail"
+printf '%s' "$alpha_detail" | grep -q 'chip clean">clean<' \
+  || fail "the overlay should repeat the card's own health: $alpha_detail"
+printf '%s' "$alpha_detail" | grep -q '>main<' \
+  || fail "the overlay should repeat the card's branch: $alpha_detail"
+[ "$(printf '%s' "$alpha_detail" \
+  | grep -o '<div class="history"><ol>.*</ol>' | grep -o '<li>' | wc -l)" -eq 5 ] \
+  || fail "the overlay should carry the last five commits: $alpha_detail"
+printf '%s' "$alpha_detail" | grep -q 'commit number 6' \
+  || fail "the overlay's commits should start at the newest: $alpha_detail"
+printf '%s' "$alpha_detail" | grep -q 'commit number 2' \
+  || fail "the overlay's commits should reach five back: $alpha_detail"
+printf '%s' "$alpha_detail" | grep -q 'commit number 1' \
+  && fail "the overlay should stop at five commits: $alpha_detail"
+pass "the overlay shows everything the card shows plus that project's last five commits"
+
+# --- the version tag and the release note, over every state the fleet is in
+# These are separate fixtures because the cases that matter are permanent states
+# of the captain's real projects: two of them will never have a tag, one has
+# nothing but firstmate's own bookkeeping tag, and the projects that do have
+# notes keep them per version in release_notes/ rather than in a root file.
+DREPOS="$TMP_ROOT/detail-repos"
+make_repo "$DREPOS/tagged" main
+# v1.10.0 above v1.9.0 is the whole point: compared as text, v1.9.0 wins.
+for v in v1.0.0 v1.9.0 v1.10.0; do git -C "$DREPOS/tagged" tag "$v"; done
+mkdir -p "$DREPOS/tagged/release_notes"
+printf '# template\n\nfill this in\n' > "$DREPOS/tagged/release_notes/template.md"
+printf '## v1.9.0\n\n- an older release\n' > "$DREPOS/tagged/release_notes/v1.9.0.md"
+# The backticks are markdown the note carries, not a command to run.
+# shellcheck disable=SC2016
+printf '## v1.10.0\n\n- **the newest** release\n- with `code` in it\n' \
+  > "$DREPOS/tagged/release_notes/v1.10.0.md"
+git -C "$DREPOS/tagged" add release_notes
+git -C "$DREPOS/tagged" commit -q -m "release notes"
+
+# Nothing but firstmate's own bookkeeping tag, and a root changelog.
+make_repo "$DREPOS/bookkept" main
+git -C "$DREPOS/bookkept" tag "fm-task/syb-replay-start-3aab070"
+printf '# Changelog\n\n## Unreleased\n\n- something changed\n' > "$DREPOS/bookkept/CHANGELOG.md"
+git -C "$DREPOS/bookkept" add CHANGELOG.md
+git -C "$DREPOS/bookkept" commit -q -m "changelog"
+
+# No tags and no notes at all - the state two of his projects are permanently in.
+make_repo "$DREPOS/bare" main
+
+cat > "$FM_HOME/data/projects.md" <<REG
+# Projects
+
+- tagged [no-mistakes] - clone kept in place at $DREPOS/tagged (added 2026-01-01)
+- bookkept [no-mistakes] - clone kept in place at $DREPOS/bookkept (added 2026-01-01)
+- bare [no-mistakes] - clone kept in place at $DREPOS/bare (added 2026-01-01)
+REG
+generate --fleet-json "$EMPTY_FLEET"
+
+tagged_detail=$(detail tagged)
+printf '%s' "$tagged_detail" | grep -q 'class="version">v1.10.0<' \
+  || fail "the latest version tag should be the highest version, not the highest text: $tagged_detail"
+pass "the latest version tag is chosen by version, so v1.10.0 outranks v1.9.0"
+
+bookkept_detail=$(detail bookkept)
+printf '%s' "$bookkept_detail" | grep -q 'fm-task' \
+  && fail "firstmate's own bookkeeping tag must never be shown as the captain's version: $bookkept_detail"
+printf '%s' "$bookkept_detail" | grep -q 'No version tags yet' \
+  || fail "a project whose only tags are bookkeeping has no version, and must say so: $bookkept_detail"
+pass "an fm-task bookkeeping tag is never presented as a version, and its project reads as having none"
+
+bare_detail=$(detail bare)
+printf '%s' "$bare_detail" | grep -q 'No tags yet' \
+  || fail "a project with no tags must read as having none, not blank: $bare_detail"
+printf '%s' "$bare_detail" | grep -q 'No release notes in this repository' \
+  || fail "a project with no release notes must say so rather than show an empty panel: $bare_detail"
+pass "no tags reads as no tags and no release notes reads as none - neither renders blank"
+
+# Release-note source order: the per-version directory is the captain's own
+# convention and outranks a root file, and `template.md` is a blank, not a note.
+printf '%s' "$tagged_detail" | grep -q 'release_notes/v1.10.0.md' \
+  || fail "the newest per-version release note should be the one shown: $tagged_detail"
+printf '%s' "$tagged_detail" | grep -q 'template' \
+  && fail "template.md is the blank a note is written from, never a release: $tagged_detail"
+printf '%s' "$tagged_detail" | grep -q 'the newest' \
+  || fail "the release note's own text should be rendered: $tagged_detail"
+printf '%s' "$tagged_detail" | grep -q '<strong>the newest</strong>' \
+  || fail "the note's markdown should be rendered, not shown raw: $tagged_detail"
+printf '%s' "$tagged_detail" | grep -q '<code>code</code>' \
+  || fail "inline code in the note should be rendered: $tagged_detail"
+printf '%s' "$tagged_detail" | grep -q 'an older release' \
+  && fail "only the newest release note belongs in the overlay: $tagged_detail"
+printf '%s' "$bookkept_detail" | grep -q 'CHANGELOG.md' \
+  || fail "a root changelog should be used when there is no per-version note: $bookkept_detail"
+pass "the newest per-version release note wins, a root changelog is the fallback, and template.md is never a release"
+
+# The whole panel is baked in when the page is written: no project's release
+# note or version may cost a request the captain's browser has to make.
+for forbidden in 'api.github.com' 'bitbucket.org/api' 'fetch(' 'XMLHttpRequest'; do
+  grep -qiF "$forbidden" "$PAGE" \
+    && fail "the overlay must reach nothing - found '$forbidden' in the page"
+done
+pass "the version and release note are baked into the page, with no request back to any forge"
+
+# Restore the registry the later sections read.
+cat > "$FM_HOME/data/projects.md" <<REG
+# Projects
+
+- alpha [no-mistakes] - clone kept in place at $REPOS/alpha (added 2026-01-01)
+- bravo [no-mistakes] - clone kept in place at $REPOS/bravo (added 2026-01-01)
+- charlie [no-mistakes] - clone kept in place at $REPOS/charlie (added 2026-01-01)
+- delta [local-only] - clone kept in place at $TMP_ROOT/nowhere (added 2026-01-01)
+REG
+generate --fleet-json "$EMPTY_FLEET"
 
 # --- live work: classification and the wants-captain boundary -------------
 task_json() {  # <id> <repo> <state> <detail> <extra-json>
