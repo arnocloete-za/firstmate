@@ -3,9 +3,10 @@
 #
 # Everything is asserted through the generated page, the command's only public
 # surface: the numbering the captain reads aloud, the git-health signals, one
-# commit on the card with five on hover, the live-work classification and its
-# wants-captain boundary, and the absence of any way for the page to act on the
-# fleet.
+# commit on the card with the rest behind a click, what the detail overlay says
+# about a project's version and release note in every state this fleet is
+# actually in, the live-work classification and its wants-captain boundary, and
+# the absence of any way for the page to act on the fleet.
 #
 # Terminal presence and the jump command are exercised against a REAL tmux
 # server on a private socket, because that half is only worth anything if it is
