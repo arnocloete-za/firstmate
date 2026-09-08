@@ -50,6 +50,12 @@ FM_BACKEND_SCRIPT=${BASH_SOURCE[0]:-$0}
 FM_BACKEND_LIB_DIR="$(cd "$(dirname "$FM_BACKEND_SCRIPT")" && pwd)"
 unset FM_BACKEND_SCRIPT
 FM_BACKEND_DEFAULT_ROOT="$(cd "$FM_BACKEND_LIB_DIR/.." && pwd)"
+# The captain's project numbers, and with them THE owner of a task's endpoint
+# label (bin/fm-task-number-lib.sh). Sourced here rather than spelled inline so
+# every selector, verification, and teardown path in the fleet derives the same
+# `fm-...` name from the same record.
+# shellcheck source=bin/fm-task-number-lib.sh
+. "$FM_BACKEND_LIB_DIR/fm-task-number-lib.sh"
 FM_ROOT="${FM_ROOT_OVERRIDE:-${FM_ROOT:-$FM_BACKEND_DEFAULT_ROOT}}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 FM_BACKEND_CONFIG_DIR="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
@@ -445,7 +451,7 @@ fm_backend_validate_task_endpoint() {  # <meta-file> <task-id>
     tmux)
       session=${window%%:*}
       pane=${window#*:}
-      if [ "$pane" = "$window" ] || [ "$pane" != "fm-$id" ] \
+      if [ "$pane" = "$window" ] || [ "$pane" != "$(fm_task_label_of_meta "$meta" "$id")" ] \
         || [ -z "$session" ]; then
         echo "REFUSED: tmux endpoint '$window' is malformed or does not belong to task $id; preserving task state." >&2
         return 1
@@ -501,7 +507,7 @@ fm_backend_validate_task_endpoint() {  # <meta-file> <task-id>
         echo "REFUSED: missing orca_worktree_id in $meta; cannot remove Orca worktree; preserving task state." >&2
         return 1
       }
-      if [ "$window" != "fm-$id" ] \
+      if [ "$window" != "$(fm_task_label_of_meta "$meta" "$id")" ] \
         || ! fm_backend_endpoint_atom_valid "$terminal" \
         || ! fm_backend_endpoint_atom_valid "$worktree_id"; then
         echo "REFUSED: Orca endpoint metadata for task $id is malformed or inconsistent; preserving task state." >&2
@@ -584,7 +590,7 @@ fm_backend_of_selector() {  # <raw-target> <resolved-target> <state-dir>
 fm_backend_expected_label_of_selector() {  # <raw-target> <state-dir>
   local raw=$1 state=$2 id
   id=$(fm_backend_task_id_for_selector "$raw" "$state" 2>/dev/null || true)
-  [ -n "$id" ] && printf 'fm-%s' "$id"
+  [ -n "$id" ] && fm_task_label "$state" "$id"
   return 0
 }
 

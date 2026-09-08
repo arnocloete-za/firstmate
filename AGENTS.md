@@ -129,6 +129,7 @@ state/               runtime records and signals; gitignored
   public-followup/   generated private transport for promised public replies: retained open-loop registrations, typed terminal-result inbox, results staged for an owning home on another machine, accepted/rejected ledgers, and retirement receipts (section 14; bin/fm-public-followup.sh)
   x-poll.error x-poll.claim-error  generated Relay and offer-claim diagnostic dedupe markers
   .startup-network.*  status, report, per-step elapsed timings, inline-print claim, and lock for the deferred startup stage that runs network checks and the inactive-outcome scan off the digest's blocking path; bin/fm-startup-network.sh
+  number-quarantine  pool numbers a finished piece of work gave back, held briefly before reuse; bin/fm-task-number-lib.sh owns the format and the hold window
   .wake-queue        durable queued wakes retained until post-handling acknowledgement: epoch<TAB>seq<TAB>kind<TAB>key<TAB>payload
   .watcher-down      private generation-bound recovery state coupling watcher downtime, durable wake presentation, and post-handling acknowledgement; never touch
   .<id>.open-decisions-cursor  per-task byte cursor and folded open-decision set bounding the OPEN DECISIONS scan's cost to new status-log appends; written only by fm-classify-lib.sh's status_open_decisions_incremental, removed by teardown, safe to delete (forces one full re-fold)
@@ -484,6 +485,12 @@ The skill owns the daemon procedure; these safety facts remain inline:
 Load `stuck-crewmate-recovery` after a stale wake, looping or confused pane, answered-by-brief question, unresponsive worker, or failed steer.
 
 ## 9. Escalation and captain etiquette
+
+**Name work by its number.**
+Every piece of work carries a number the captain reads and says aloud, so lead with it when a captain-facing message is about one, written as `#07`.
+Read that number from the fleet snapshot's `number_display` for a live task, or from the project's own number on the board; never compose one, because an invented number is the one thing that can send him to the wrong work.
+The numbers are his own vocabulary and need no translation, and they replace the task id this section already keeps internal.
+Work the scheme reports as unnumbered has no number to lead with, so name the project and the change instead of guessing one.
 
 **Talk in outcomes, not mechanics.**
 Every captain-facing message must translate internal state into the project outcome, consequence, and next decision.

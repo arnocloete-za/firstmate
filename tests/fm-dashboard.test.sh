@@ -177,7 +177,7 @@ jq -n --argjson tasks "$(jq -n \
   --argjson blocked "$(task_json t-blocked proj blocked 'stopped' '{}')" \
   --argjson askuser "$(task_json t-askuser proj parked 'parked at review: 2 finding(s) (ask-user: authority decision)' '{}')" \
   --argjson hold "$(task_json t-hold proj paused 'idling' '{"backlog":{"hold_kind":"captain","hold_reason":"Try the new landing screen and say what you think."}}')" \
-  --argjson keyed "$(task_json t-keyed proj working 'harness busy' '{"hints":{"open_decisions":["which-auth-provider"]}}')" \
+  --argjson keyed "$(task_json t-keyed proj working 'harness busy' '{"hints":{"open_decisions":[{"key":"which-auth-provider","verb":"needs-decision","summary":"Which auth provider should the sign-in screen use?"}]}}')" \
   --argjson review "$(task_json t-review proj 'done' 'checks green: PR ready for review' '{"pr":{"url":"https://example.invalid/pr/1"}}')" \
   --argjson gate "$(task_json t-gate proj parked 'parked at document: 1 finding(s)' '{}')" \
   --argjson external "$(task_json t-external proj paused 'waiting for the nightly export' '{}')" \
@@ -203,6 +203,32 @@ expect_wants t-hold    'Needs your decision'
 expect_wants t-keyed   'Needs your decision'
 expect_wants t-review  'Ready for your review'
 pass "failures, blockers, captain decisions, and a finished PR all read as waiting on the captain"
+
+# An open decision comes back as a RECORD, not a string, so the row has to read
+# its summary. Rendering the record itself put "[object Object]" where the reason
+# belongs - the one thing on the row that is supposed to tell him what is owed.
+row t-keyed | grep -qF 'Which auth provider should the sign-in screen use?' \
+  || fail "an open decision's row must say what the decision is: $(row t-keyed)"
+row t-keyed | grep -qF '[object Object]' \
+  && fail "an open decision must be read as a record, not printed as one: $(row t-keyed)"
+# A worker's own decision prose can run to paragraphs, and a row is for
+# recognizing which call is owed, not for reproducing it.
+LONG_FLEET="$TMP_ROOT/fleet-long-decision.json"
+LONG_SUMMARY=$(printf 'sentence %s of a very long decision summary. ' 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15)
+jq -n --argjson tasks "$(jq -n \
+  --argjson long "$(task_json t-long proj working 'harness busy' \
+    "$(jq -n --arg s "$LONG_SUMMARY" '{hints:{open_decisions:[{key:"k",verb:"needs-decision",summary:$s}]}}')")" \
+  '[$long]')" \
+  '{schema: "fm-fleet-snapshot.v1", generated: "2026-01-01T00:00:00Z", tasks: $tasks}' \
+  > "$LONG_FLEET"
+LONG_PAGE="$TMP_ROOT/long-decision.html"
+"$DASH" --out "$LONG_PAGE" --fleet-json "$LONG_FLEET" > /dev/null 2> "$TMP_ROOT/err.txt" \
+  || fail "generating the long-decision page failed: $(cat "$TMP_ROOT/err.txt")"
+row_in "$LONG_PAGE" t-long | grep -qF 'sentence 1 of a very long decision summary' \
+  || fail "a long decision must still show its opening: $(row_in "$LONG_PAGE" t-long)"
+[ "$(row_in "$LONG_PAGE" t-long | grep -c 'sentence 15')" -eq 0 ] \
+  || fail "a long decision must not be reproduced whole on the row: $(row_in "$LONG_PAGE" t-long)"
+pass "an open decision's row reads the decision's own words, bounded to what a row can carry"
 
 expect_calm() {  # <id> <label>
   row "$1" | grep -q 'class="row wants"' \
@@ -295,9 +321,9 @@ REG
 # One task per board, plus one whose project is registered on no board at all.
 BOARD_FLEET="$TMP_ROOT/fleet-boards.json"
 jq -n --argjson tasks "$(jq -n \
-  --argjson work "$(task_json t-work w-one working 'harness busy' '{}')" \
-  --argjson personal "$(task_json t-personal p-one working 'harness busy' '{}')" \
-  --argjson ghost "$(task_json t-ghost not-registered working 'harness busy' '{}')" \
+  --argjson work "$(task_json t-work w-one working 'harness busy' '{"number":1,"number_display":"01"}')" \
+  --argjson personal "$(task_json t-personal p-one working 'harness busy' '{"number":50,"number_display":"50"}')" \
+  --argjson ghost "$(task_json t-ghost not-registered working 'harness busy' '{"number":100,"number_display":"100"}')" \
   '[$work, $personal, $ghost]')" \
   '{schema: "fm-fleet-snapshot.v1", generated: "2026-01-01T00:00:00Z", tasks: $tasks}' \
   > "$BOARD_FLEET"
@@ -343,16 +369,21 @@ grep -qF '>w-bad<' "$PERSONAL_PAGE" \
 pass "an unmarked, unannotated, or misspelled project lands on the work board, so nothing silently vanishes"
 
 # Numbering is per board and in registry order within it, so a project's number
-# is its position among the projects the captain sees beside it.
+# is its position among the projects the captain sees beside it - and the two
+# boards number from DIFFERENT bases, so one number never means two projects.
 card_in "$WORK_PAGE" 1 | grep -q 'class="num">01<' \
   || fail "the work board should number its own first project 01: $(card_in "$WORK_PAGE" 1)"
 card_in "$WORK_PAGE" 2 | grep -q '>w-two<' \
   || fail "the work board should skip the marked project and number registry order within itself: $(card_in "$WORK_PAGE" 2)"
-card_in "$PERSONAL_PAGE" 1 | grep -q 'class="num">01<' \
-  || fail "each board numbers from 01 independently: $(card_in "$PERSONAL_PAGE" 1)"
-card_in "$PERSONAL_PAGE" 2 | grep -q 'class="num">02<' \
-  || fail "the personal board should number its second project 02: $(card_in "$PERSONAL_PAGE" 2)"
-pass "each board numbers its own projects from 01 in registry order within that board"
+card_in "$WORK_PAGE" 2 | grep -q 'class="num">02<' \
+  || fail "the work board should number its second project 02: $(card_in "$WORK_PAGE" 2)"
+card_in "$PERSONAL_PAGE" 1 | grep -q 'class="num">50<' \
+  || fail "the personal board should number its first project 50: $(card_in "$PERSONAL_PAGE" 1)"
+card_in "$PERSONAL_PAGE" 2 | grep -q 'class="num">51<' \
+  || fail "the personal board should number its second project 51: $(card_in "$PERSONAL_PAGE" 2)"
+grep -qF 'class="num">01<' "$PERSONAL_PAGE" \
+  && fail "the two boards must not both use 01 - the captain says these numbers aloud"
+pass "each board numbers its own projects in registry order from its own base, so a number names one project"
 
 # The same guarantee the whole-fleet board has: a number is a spoken handle, so
 # it must not move when a project's status changes.
@@ -383,6 +414,67 @@ row_in "$PERSONAL_PAGE" t-ghost | grep -q 'class="row' \
 grep -q '<b>1</b> running' "$PERSONAL_PAGE" \
   || fail "the personal board should count only its own running work: $(grep -o '<b>[0-9]*</b> running' "$PERSONAL_PAGE")"
 pass "live work follows its project's board, and work on an unregistered project stays on the work board"
+
+# --- the number the captain says out loud, on both halves of the page ------
+# The whole reason the number exists: he hears "#50" and knows which piece of
+# work it is without matching a name letter by letter. So a live row must LEAD
+# with the same number the project's card carries, and the number a row shows
+# must be the one the canonical fleet reader already resolved - this page
+# derives none of its own.
+row_in "$WORK_PAGE" t-work | grep -q 'class="row-num">01<' \
+  || fail "a live row must lead with its project's number: $(row_in "$WORK_PAGE" t-work)"
+row_in "$PERSONAL_PAGE" t-personal | grep -q 'class="row-num">50<' \
+  || fail "a personal row must carry its personal number: $(row_in "$PERSONAL_PAGE" t-personal)"
+card_in "$PERSONAL_PAGE" 1 | grep -q 'class="num">50<' \
+  || fail "the card and the row must show the SAME number for one project"
+pass "a live row leads with the same number its project's card carries"
+
+# Work outside the registry has no card to read a number off, so the number it
+# shows is the pool number it took when it started.
+row_in "$WORK_PAGE" t-ghost | grep -q 'class="row-num">100<' \
+  || fail "work on an unregistered project must show its pool number: $(row_in "$WORK_PAGE" t-ghost)"
+pass "work on a project the captain never registered still shows a number, from the 100 pool"
+
+# A number the scheme cannot answer for is shown as absent rather than borrowed
+# from a neighbour: a wrong number is worse than none, because he would act on it.
+UNNUMBERED_FLEET="$TMP_ROOT/fleet-unnumbered.json"
+jq -n --argjson tasks "$(jq -n \
+  --argjson bare "$(task_json t-bare w-one working 'harness busy' '{}')" \
+  '[$bare]')" \
+  '{schema: "fm-fleet-snapshot.v1", generated: "2026-01-01T00:00:00Z", tasks: $tasks}' \
+  > "$UNNUMBERED_FLEET"
+UNNUMBERED_PAGE="$TMP_ROOT/boards/unnumbered.html"
+FM_HOME="$BOARD_HOME" "$DASH" --group work --out "$UNNUMBERED_PAGE" \
+  --fleet-json "$UNNUMBERED_FLEET" > /dev/null 2> "$TMP_ROOT/board-err.txt" \
+  || fail "generating the unnumbered board failed: $(cat "$TMP_ROOT/board-err.txt")"
+row_in "$UNNUMBERED_PAGE" t-bare | grep -q 'class="row-num">--<' \
+  || fail "a task the scheme does not number must say so: $(row_in "$UNNUMBERED_PAGE" t-bare)"
+row_in "$UNNUMBERED_PAGE" t-bare | grep -q '>w-one<' \
+  || fail "an unnumbered row must still name its project"
+pass "a task with no number reads as unnumbered rather than borrowing another's"
+
+# Firstmate's own repository holds a reserved number, and registering it as a
+# project must not renumber the board the captain has already learned.
+SHIP_HOME="$TMP_ROOT/ship-home"
+mkdir -p "$SHIP_HOME/data"
+cat > "$SHIP_HOME/data/projects.md" <<REG
+# Projects
+
+- w-one - clone kept in place at $BOARD_REPOS/w-one (added 2026-01-01)
+- firstmate [project-branch] - the fleet tooling itself (added 2026-01-01)
+- w-two [no-mistakes] - clone kept in place at $BOARD_REPOS/w-two (added 2026-01-01)
+REG
+SHIP_PAGE="$TMP_ROOT/boards/ship.html"
+FM_HOME="$SHIP_HOME" "$DASH" --group work --out "$SHIP_PAGE" \
+  --fleet-json "$EMPTY_FLEET" > /dev/null 2> "$TMP_ROOT/board-err.txt" \
+  || fail "generating the ship board failed: $(cat "$TMP_ROOT/board-err.txt")"
+card_in "$SHIP_PAGE" 1 | grep -q 'class="num">01<' \
+  || fail "the first work project keeps 01 with firstmate registered above it: $(card_in "$SHIP_PAGE" 1)"
+card_in "$SHIP_PAGE" 2 | grep -q 'class="num">00<' \
+  || fail "firstmate must show its reserved number: $(card_in "$SHIP_PAGE" 2)"
+card_in "$SHIP_PAGE" 3 | grep -q 'class="num">02<' \
+  || fail "registering firstmate must not shift the project after it: $(card_in "$SHIP_PAGE" 3)"
+pass "firstmate carries a reserved number that never renumbers the captain's board"
 
 # One generator, one template. The two boards are the same page with different
 # projects on it, so their styling and script must be byte-identical - a fork

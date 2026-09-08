@@ -12,6 +12,11 @@
 # transient-then-settled pane_current_path sequence with a fake tmux and
 # asserts the recorded worktree resolves to the real, settled worktree, never
 # the stale first read.
+#
+# It is also where the end-to-end shape of a dispatched task's TERMINAL NAME is
+# pinned, because this is the suite that runs a real fm-spawn.sh through to a
+# real task record: the captain's number leads that name so finding a terminal
+# is reading a number rather than matching a task name.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -148,7 +153,65 @@ test_already_settled_pane_costs_one_confirm_sleep() {
   pass "an already-settled pane confirms via the existing inter-poll sleep, not an extra full cycle"
 }
 
+# --- the number leads the terminal's own name -----------------------------
+# The captain reads his terminal list to find work, so the number has to be in
+# the name the terminal actually carries - and it has to be the SAME number the
+# board shows him, which is why the registry, not the spawn, decides it.
+test_a_dispatched_task_terminal_leads_with_its_project_number() {
+  local rec id out status
+  id=numbered-terminal-z3
+  rec=$(make_settle_case numbered-terminal "$id" 0)
+  read_settle_record "$rec"
+  cat > "$HOME_DIR/data/projects.md" <<REG
+# Projects
+
+- decoy [no-mistakes] - takes the first number (added 2026-01-01)
+- $(basename "$PROJ_DIR") [no-mistakes] - the project this task works on (added 2026-01-01)
+REG
+  # Ship work on a registered project runs in the captain's own copy, so this
+  # isolated dispatch needs his recorded say-so (bin/fm-isolated-authorize.sh).
+  # That is orthogonal to numbering; it is just the legitimate way to get an
+  # isolated spawn on a registered project.
+  FM_ROOT_OVERRIDE='' FM_HOME="$HOME_DIR" \
+    FM_STATE_OVERRIDE="$HOME_DIR/state" FM_DATA_OVERRIDE="$HOME_DIR/data" \
+    FM_PROJECTS_OVERRIDE="$HOME_DIR/projects" FM_CONFIG_OVERRIDE="$HOME_DIR/config" \
+    "$ROOT/bin/fm-isolated-authorize.sh" grant "$id" "$(basename "$PROJ_DIR")" \
+    --captain "run this one in a throwaway copy" > /dev/null \
+    || fail "could not record the isolated-copy authorization the fixture needs"
+
+  out=$(run_settle_spawn "$id")
+  status=$?
+  expect_code 0 "$status" "spawn should succeed"$'\n'"$out"
+  assert_contains "$out" "window=firstmate:fm-02-$id" \
+    "the dispatched terminal must be named with its project's number: $out"
+  assert_grep "window=firstmate:fm-02-$id" "$HOME_DIR/state/$id.meta" \
+    "the task record must name the terminal that was actually created"
+  assert_grep "number=2" "$HOME_DIR/state/$id.meta" \
+    "the task record must hold the number, so the name is frozen for this terminal's life"
+  pass "a dispatched task's terminal name leads with its project's number"
+}
+
+# Work on a project the captain never registered still needs a number he can
+# say, so it takes the lowest free one from the 100 pool when it starts.
+test_work_off_the_registry_takes_a_pool_number() {
+  local rec id out status
+  id=pool-terminal-z4
+  rec=$(make_settle_case pool-terminal "$id" 0)
+  read_settle_record "$rec"
+  # No registry at all: nothing here is one of his numbered projects.
+  out=$(run_settle_spawn "$id")
+  status=$?
+  expect_code 0 "$status" "spawn should succeed"$'\n'"$out"
+  assert_contains "$out" "window=firstmate:fm-100-$id" \
+    "work off the registry must take the pool's first number: $out"
+  assert_grep "number=100" "$HOME_DIR/state/$id.meta" \
+    "the allocated pool number must be recorded, or nothing could give it back"
+  pass "work on an unregistered project takes a pool number, in its terminal name too"
+}
+
 test_single_stale_first_read_is_not_accepted
 test_already_settled_pane_costs_one_confirm_sleep
+test_a_dispatched_task_terminal_leads_with_its_project_number
+test_work_off_the_registry_takes_a_pool_number
 
 echo "# all fm-spawn-worktree-settle tests passed"

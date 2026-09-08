@@ -78,6 +78,13 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 # shellcheck source=bin/fm-composer-lib.sh
 . "$FM_BACKEND_HERDR_ROOT/bin/fm-composer-lib.sh"
 
+# A task's endpoint label, owned by bin/fm-task-number-lib.sh so this adapter's
+# projection validates against the same `fm-...` name every other path derives.
+# Sourced here for the same reason as the classifier above: this file's own unit
+# tests source it directly, without fm-backend.sh's preamble.
+# shellcheck source=bin/fm-task-number-lib.sh
+. "$FM_BACKEND_HERDR_ROOT/bin/fm-task-number-lib.sh"
+
 # Shared, backend-neutral normalized-transition shape and the single-owner
 # status->action policy table (bin/fm-transition-lib.sh). This adapter's event
 # subscriber (fm_backend_herdr_wait_transition) normalizes every
@@ -549,7 +556,10 @@ fm_backend_herdr_projection_journal_snapshot() {  # <journal> <task-id>
     && [ -n "$FM_BACKEND_HERDR_JOURNAL_WORKSPACE_LABEL" ] \
     && [ -n "$FM_BACKEND_HERDR_JOURNAL_TASK_LABEL" ] || return 1
   expected_label=$(fm_backend_herdr_projection_workspace_label "$id" "$FM_BACKEND_HERDR_JOURNAL_PROJECTION_ID")
-  expected_task_label="fm-$id"
+  # The task's endpoint label is derived by its one owner from the task record
+  # that sits beside this journal, so a numbered task's projection validates
+  # against the same name its terminal actually carries.
+  expected_task_label=$(fm_task_label "${journal%/*}" "$id")
   [ "$FM_BACKEND_HERDR_JOURNAL_WORKSPACE_LABEL" = "$expected_label" ] \
     && [ "$FM_BACKEND_HERDR_JOURNAL_TASK_LABEL" = "$expected_task_label" ]
 }

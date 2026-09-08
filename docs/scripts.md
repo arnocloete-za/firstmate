@@ -19,6 +19,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-fleet-view.sh`       | Render the fleet snapshot as a human Markdown view                                   |
 | `fm-bearings-snapshot.sh` | Project the bounded remote-ledger fleet snapshot to compact TOON; `--include-prs` adds live GitHub enrichment |
 | `fm-bearings-board.sh`   | Build and arm the stable interactive `/bearings lavish` fleet board                  |
+| `fm-task-number-lib.sh`  | One owner of the captain's project numbers: the board bases, the reserved ship number, the 100 pool and its hold window, and the `fm-<number>-<id>` endpoint label every surface derives |
 | `fm-dashboard.mjs`       | Generate one read-only dashboard board: the git health of that board's projects beside one row per running task on them, written as one static HTML file with no server and no path back to the fleet. `--group` selects the board (`/dashboard` and `/dashboard-personal` are the same generator); `--watch` keeps re-writing it until stopped |
 | `fm-secondmate-reconcile.sh` | Queue Bearings reconcile requests for later supervision delivery and ask each mismatched home through its durable inbox with a per-home cooldown |
 | `fm-update.sh`           | Fast-forward-only self-update of firstmate and local or remote secondmate homes       |

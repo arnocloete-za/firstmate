@@ -34,6 +34,11 @@
 #     It never changes captain_actionable; renderers may use it to keep
 #     prose-deferred rows out of default views.
 #   tasks[]: one row per state/<id>.meta, sorted by id.
+#     number is the captain's own number for that work and number_display is how
+#     he says it: bin/fm-task-number-lib.sh owns the scheme, and this snapshot
+#     adds only the letter suffix that keeps two tasks sharing one number
+#     tellable apart, because only a whole-fleet read can see that collision.
+#     Both are null for work the scheme does not number, never a guessed value.
 #     Local current_state is parsed from bin/fm-crew-state.sh <id> and preserves
 #     state, source, detail, and raw line separately. Remote secondmate rows use
 #     an explicit unknown value because their endpoint liveness belongs to
@@ -480,7 +485,7 @@ backlog_json() {  # [<backlog-path>] - defaults to this home's $BACKLOG
 }
 
 task_json_lines() {
-  local meta id kind harness mode yolo project worktree home projects spawn_gen backend target status_log report_path
+  local meta id kind harness mode yolo project worktree home projects spawn_gen backend target status_log report_path number
   local remote_host remote_root
   local pr pr_source event_json current_json endpoint_exists agent_alive meta_json status_json report_json worktree_json home_json
   local last_event_raw current_state current_source pending_decision blocked_event report_present=0 pr_from_status
@@ -511,6 +516,11 @@ task_json_lines() {
     fi
     status_log="$STATE/$id.status"
     report_path="$DATA/$id/report.md"
+    # The captain's number for this work, from its one owner
+    # (bin/fm-task-number-lib.sh): what the record holds, else what the
+    # project's registry position derives. Empty when neither answers, which
+    # this snapshot reports as null rather than inventing a number.
+    number=$(fm_task_number_of_task "$DATA" "$STATE" "$id" 2>/dev/null || true)
     pr=$(meta_value "$meta" pr)
     pr_source=meta
     if [ -z "$pr" ]; then
@@ -571,7 +581,7 @@ task_json_lines() {
       agent_alive=unknown
     else
       if [ -n "$target" ]; then
-        if fm_backend_target_exists "$backend" "$target" "fm-$id" >/dev/null 2>&1; then
+        if fm_backend_target_exists "$backend" "$target" "$(fm_task_label_of_meta "$meta" "$id")" >/dev/null 2>&1; then
           endpoint_exists=true
         else
           endpoint_exists=false
@@ -606,6 +616,7 @@ task_json_lines() {
       --arg home "$home" \
       --arg projects "$projects" \
       --arg spawn_gen "$spawn_gen" \
+      --arg number "$number" \
       --arg backend "$backend" \
       --arg target "$target" \
       --arg remote_host "$remote_host" \
@@ -635,6 +646,7 @@ task_json_lines() {
         yolo:($yolo // ""),
         project:($project // ""),
         spawn_gen:($spawn_gen | if . == "" then null else . end),
+        number:($number | if . == "" then null else tonumber end),
         backend:$backend,
         remote:(if $remote_host == "" then null else {host:$remote_host,root:$remote_root} end),
         paths:{
@@ -671,7 +683,29 @@ task_json_lines() {
              return_channel_note:null}
           end)
       }'
-  done | jq -s 'sort_by(.id)'
+  done | jq -s '
+    # number_display is the number as the captain says it: two digits so a
+    # column of them lines up, and a letter suffix ONLY while more than one
+    # task holds the same number. His one-piece-of-work-at-a-time rule means a
+    # suffix should never appear, but if it ever does, two rows both reading #7
+    # with no way to tell them apart would be worse than the anomaly itself -
+    # so the display stays honest and he can still say "#07b" out loud. Only a
+    # whole-fleet read can see the collision, which is why the suffix is
+    # decided here and never frozen into a terminal name.
+    sort_by(.id)
+    | ([ .[] | select(.number != null) | .number | tostring ]
+       | group_by(.) | map({key: .[0], value: length}) | from_entries) as $counts
+    | [ foreach .[] as $t ({ord: {}};
+          ($t.number | if . == null then null else tostring end) as $k
+          | (if $k == null then . else .ord[$k] = ((.ord[$k] // 0) + 1) end)
+          | .out = ($t + { number_display:
+              ( if $k == null then null
+                else (if $t.number < 10 then "0" + $k else $k end)
+                     + (if ($counts[$k] // 1) > 1
+                        then ([ "a","b","c","d","e","f","g","h","i","j" ][.ord[$k] - 1] // "?")
+                        else "" end)
+                end) })
+        ; .out) ]'
 }
 
 # Main-home current-inventory validity: same orphan / unstructured-current checks
