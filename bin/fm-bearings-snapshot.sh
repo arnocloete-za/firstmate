@@ -128,7 +128,7 @@ remote homes under one shared snapshot budget and may refresh the parent-side ca
 --include-prs additionally performs live GitHub discovery and checks.
 
 Default fields: schema, home, generated, prs, conn{id,age_seconds},
-  in_flight{id,kind,state,repo,doing},
+  in_flight{id,kind,num,state,repo,doing},
   secondmates{id,state,doing,provenance,freshness,age_seconds,contradiction,reason},
   secondmate_reconcile{id,spawn_gen,host,kind,ids},
   decisions_open{id,key,verb,summary,owner}, landed{id,what,artifact,owner},
@@ -404,6 +404,7 @@ MODEL=$(printf '%s' "$SNAP" | jq \
        | select(.backlog.current_role != "program")
        | select(.backlog.current_role != "held" or .current_state.state == "working")
        | {id, kind,
+        num:(.number_display // "-"),
         state: .current_state.state,
         repo:(.backlog.repo // .project // null),
         doing: ((.current_state.detail // "") as $d
@@ -413,6 +414,7 @@ MODEL=$(printf '%s' "$SNAP" | jq \
          | $m.active_children[]?
          | {id:($m.id + "/" + .id),
             kind:(.kind // "secondmate"),
+            num:"-",
             state:(.state // "working"),
             repo:(.repo // null),
             doing:((.doing // .state) | trunc(90))} ]) as $in_flight_all

@@ -243,6 +243,96 @@ test_supported_backend_endpoint_records_validate() {
   pass "cleanup identity: valid tmux, Herdr, Zellij, Orca, and cmux records validate while every empty backend target refuses"
 }
 
+# The captain's number leads a task's terminal name so that finding a terminal
+# is reading a number. That makes the name identity as well as display, so the
+# label has ONE owner (bin/fm-task-number-lib.sh) and cleanup must refuse any
+# record whose window does not match the label that owner derives - otherwise a
+# renumbered record could send a destructive cleanup at the wrong terminal.
+test_numbered_endpoint_records_validate_against_their_own_label() {
+  local dir id
+  dir=$(make_case numbered-labels)
+  # shellcheck source=/dev/null
+  . "$ROOT/bin/fm-backend.sh"
+
+  id=numbered-tmux
+  fm_write_meta "$dir/home/state/$id.meta" \
+    "window=firstmate:fm-07-$id" "number=7" "worktree=$dir/worktree" "project=$dir/project"
+  fm_backend_validate_task_endpoint "$dir/home/state/$id.meta" "$id" \
+    || fail "a numbered tmux endpoint must validate against its numbered label"
+  [ "$FM_BACKEND_VALIDATED_TARGET" = "firstmate:fm-07-$id" ] \
+    || fail "numbered tmux validation returned the wrong identity: $FM_BACKEND_VALIDATED_TARGET"
+
+  # A record whose number no longer matches the terminal it names is exactly the
+  # mismatch that must stop rather than proceed on the closer guess.
+  id=renumbered-tmux
+  fm_write_meta "$dir/home/state/$id.meta" \
+    "window=firstmate:fm-07-$id" "number=8" "worktree=$dir/worktree" "project=$dir/project"
+  fm_backend_validate_task_endpoint "$dir/home/state/$id.meta" "$id" 2>/dev/null \
+    && fail "a window that disagrees with the record's own number must be refused"
+
+  # Two numbers make the label ambiguous, so the record must refuse rather than
+  # pick one.
+  id=ambiguous-tmux
+  fm_write_meta "$dir/home/state/$id.meta" \
+    "window=firstmate:fm-07-$id" "number=7" "number=8" "worktree=$dir/worktree" "project=$dir/project"
+  fm_backend_validate_task_endpoint "$dir/home/state/$id.meta" "$id" 2>/dev/null \
+    && fail "an ambiguous number record must be refused, not resolved to one of its numbers"
+
+  # Every task record written before numbering existed carries no number and
+  # must still validate exactly as it always did.
+  id=historical-tmux
+  fm_write_meta "$dir/home/state/$id.meta" \
+    "window=firstmate:fm-$id" "worktree=$dir/worktree" "project=$dir/project"
+  fm_backend_validate_task_endpoint "$dir/home/state/$id.meta" "$id" \
+    || fail "an unnumbered record must keep validating against the historical label"
+
+  id=numbered-orca
+  fm_write_meta "$dir/home/state/$id.meta" \
+    "window=fm-00-$id" "number=0" "endpoint_task_id=$id" "terminal=term-9" \
+    "worktree=$dir/worktree" "project=$dir/project" "backend=orca" "orca_worktree_id=worktree-3"
+  fm_backend_validate_task_endpoint "$dir/home/state/$id.meta" "$id" \
+    || fail "a numbered Orca endpoint must validate against its numbered label"
+  [ "$FM_BACKEND_VALIDATED_TARGET" = term-9 ] \
+    || fail "numbered Orca validation did not select its terminal"
+
+  # And the selector's expected label is derived from the same record, so the
+  # verification a steer or capture performs cannot drift from the terminal.
+  [ "$(fm_backend_expected_label_of_selector numbered-tmux "$dir/home/state")" = fm-07-numbered-tmux ] \
+    || fail "a selector's expected label must come from the task's own record"
+  [ "$(fm_backend_expected_label_of_selector fm-historical-tmux "$dir/home/state")" = fm-historical-tmux ] \
+    || fail "an unnumbered task's expected label must stay the historical one"
+  pass "cleanup identity: a numbered record validates only against its own label, and an unnumbered one keeps the historical label"
+}
+
+# A pool number is an allocation, so cleanup has to give it back - that is what
+# keeps the numbers the captain says aloud two or three digits instead of
+# climbing forever. A number the registry derives was never the pool's to give.
+test_cleanup_returns_a_pool_number_and_leaves_a_derived_one() {
+  local dir id
+  dir=$(make_case pool-release)
+
+  id=pool-task
+  fm_write_meta "$dir/home/state/$id.meta" \
+    "window=firstmate:fm-100-$id" "number=100" "worktree=$dir/worktree" "project=$dir/project" \
+    "kind=scout" "mode=scout"
+  run_case "$dir" "$id" > "$dir/pool.out" 2> "$dir/pool.err" \
+    || fail "cleanup of a pool-numbered task failed: $(cat "$dir/pool.err")"
+  assert_present "$dir/home/state/number-quarantine" \
+    "cleanup must give a pool number back so it can be reused"
+  assert_grep "100 " "$dir/home/state/number-quarantine" \
+    "the returned number must be the one this work held"
+
+  id=derived-task
+  fm_write_meta "$dir/home/state/$id.meta" \
+    "window=firstmate:fm-03-$id" "number=3" "worktree=$dir/worktree" "project=$dir/project" \
+    "kind=scout" "mode=scout"
+  run_case "$dir" "$id" > "$dir/derived.out" 2> "$dir/derived.err" \
+    || fail "cleanup of a project-numbered task failed: $(cat "$dir/derived.err")"
+  assert_no_grep "3 " "$dir/home/state/number-quarantine" \
+    "a project's own number is not the pool's to hold - only the registry moves it"
+  pass "cleanup returns a pool number for reuse and never touches a project's own number"
+}
+
 test_tmux_empty_target_refuses_without_invocation() {
   local dir rc
   dir=$(make_case direct-empty)
@@ -369,6 +459,8 @@ test_invalid_endpoint_records_refuse_before_mutation
 test_control_lock_contention_refuses_before_mutation
 test_metadata_lock_serializes_destructive_cleanup
 test_supported_backend_endpoint_records_validate
+test_numbered_endpoint_records_validate_against_their_own_label
+test_cleanup_returns_a_pool_number_and_leaves_a_derived_one
 test_tmux_empty_target_refuses_without_invocation
 test_recorded_process_identity_cleanup_is_exact
 test_isolated_tmux_invalid_and_valid_cleanup

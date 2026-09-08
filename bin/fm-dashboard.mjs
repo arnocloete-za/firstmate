@@ -36,7 +36,9 @@
 // so one board is never a list he has to read past. Which board a project is on
 // is REGISTRY state, not a list in here: an annotation flag `+personal` in its
 // data/projects.md entry puts it on the personal board, and everything else is
-// work. He moves a project between boards by editing that one line.
+// work. He moves a project between boards by editing that one line. That
+// annotation is read by bin/fm-task-number-lib.sh, not here, because a board
+// and its numbers are one decision.
 //
 // An UNMARKED project is a work project. A marker he has not written yet, or
 // has written wrong, therefore leaves the project on the work board where he
@@ -45,7 +47,15 @@
 // A running task is on the board its project is on. A task whose project is not
 // registered at all stays on the work board, for the same reason.
 //
-// Each board is numbered independently, in registry order within that board.
+// Numbering is NOT decided here. bin/fm-task-number-lib.sh is the single owner
+// of the captain's project numbers and of which board a project is on, and this
+// command reads its table once: the work board runs from 1, the personal board
+// from 50, and firstmate's own repository holds a reserved number that is never
+// counted in a board's run. A live row takes its number from the fleet
+// snapshot, which resolves it through that same owner, so a card and a row can
+// never disagree about what #7 is. Work on an unregistered project is numbered
+// from the 100 pool when it starts, which is why such a task still shows a
+// number here even though it has no card.
 //
 // Watch mode
 // ----------
@@ -90,11 +100,11 @@
 // ("Human views must render this output instead of parsing state files again").
 // This command never fetches, pulls, commits, steers, tears down, or merges.
 //
-// Project ordering is REGISTRY ORDER, and the number on each card is that
-// project's position among the projects on ITS OWN board. The captain reads
-// these numbers aloud, so a number must not move when a project's status
-// changes - that is why the board does not sort worst-first, and why attention
-// shows as color instead.
+// Project ordering is REGISTRY ORDER, and the number on each card is the one
+// bin/fm-task-number-lib.sh derives from that project's position within ITS OWN
+// board. The captain reads these numbers aloud, so a number must not move when
+// a project's status changes - that is why the board does not sort worst-first,
+// and why attention shows as color instead.
 //
 // Default-branch resolution and terminal presence are not decided here: both
 // shell out to their owners, fm_default_branch() in bin/fm-tangle-lib.sh and
@@ -165,9 +175,11 @@ function die(msg) {
 const DEFAULT_INTERVAL = 30;
 const MIN_INTERVAL = 5;
 
-// Every board this generator can render, and the only place a board differs:
-// which projects it takes, where it writes, what it calls itself, and which
-// command re-runs it. Adding a board is a row here plus its registry marker -
+// Every board this generator can render, and the only place a board's own
+// PRESENTATION differs: where it writes, what it calls itself, and which command
+// re-runs it. Which projects a board takes is not here - that is one decision
+// with the numbering, and bin/fm-task-number-lib.sh owns both, keyed by these
+// same board names. Adding a board is a row here plus a board in that owner -
 // never a second generator or a second template, because two copies of this
 // page would drift the first time only one of them was changed.
 //
@@ -176,9 +188,9 @@ const MIN_INTERVAL = 5;
 // leaves a project visible rather than dropping it off every board.
 const WORK_GROUP = 'work';
 const BOARDS = {
-  work: { marker: null, page: 'index.html', title: 'Fleet dashboard', command: '/dashboard' },
+  work: { page: 'index.html', title: 'Fleet dashboard', command: '/dashboard' },
   personal: {
-    marker: '+personal', page: 'personal.html', title: 'Personal dashboard', command: '/dashboard-personal',
+    page: 'personal.html', title: 'Personal dashboard', command: '/dashboard-personal',
   },
 };
 
@@ -299,29 +311,30 @@ const withinDays = (iso, days) => {
 };
 
 // --- 1. the registry -------------------------------------------------------
-// Which board a project is on is registry state. The marker rides in the same
-// annotation bracket as the registered delivery posture, as a `+` flag beside
-// `+yolo` - that bracket is already where an orthogonal per-project flag goes,
-// and bin/fm-project-mode.sh (the format's owner) reads flags it does not know
-// as flags rather than as a mode.
+// Which board a project is on, and the number the captain reads aloud for it,
+// are BOTH answered by bin/fm-task-number-lib.sh - the single owner of the
+// numbering scheme - in one read of its table. Nothing here re-derives either.
+// That is the whole point: a project's card and its live row have to be the
+// same number, not two systems that happen to look alike, and two parsers of
+// the same registry annotation would drift the first time only one changed.
 //
-// Anchored to the annotation slot right after the name, so a bracket that
-// happens to appear later in the free-form description can never be read as one
-// of these flags.
-const ANNOTATION = /^-\s+\S+\s+\[([^\]]*)\]/;
-
-// Unrecognized annotation, no annotation, unknown marker: all of them mean the
-// work board. Membership of any other board has to be stated, so the failure
-// direction is always "still on the board he reads first".
-function groupOf(line) {
-  const flags = (ANNOTATION.exec(line)?.[1] || '').split(/\s+/).filter(Boolean);
-  for (const [group, { marker }] of Object.entries(BOARDS)) {
-    if (marker && flags.includes(marker)) return group;
+// The lib's own header owns the scheme (work board from 1, personal from 50,
+// everything else from the 100 pool, firstmate reserved) and the rule that an
+// unmarked, unrecognized, or misspelled annotation leaves a project numbered on
+// the work board rather than on no board at all.
+async function readNumbering() {
+  const table = await bashFnOrEmpty('fm-task-number-lib.sh', 'fm_task_number_table', DATA);
+  const rows = new Map();
+  for (const line of table.split('\n')) {
+    if (!line) continue;
+    const [name, group, , display] = line.split('\t');
+    if (!name) continue;
+    rows.set(name, { group: group || WORK_GROUP, display: display || null });
   }
-  return WORK_GROUP;
+  return rows;
 }
 
-async function readRegistry() {
+async function readRegistry(numbering) {
   let text;
   try {
     text = await readFile(REGISTRY, 'utf8');
@@ -333,10 +346,14 @@ async function readRegistry() {
     if (!line.startsWith('- ')) continue;
     const name = line.slice(2).trim().split(/\s+/)[0];
     if (!name) continue;
+    // Path resolution stays this script's own read-only reading convention
+    // (see the header); only the board and the number come from the owner.
     const embedded = /clone kept in place at ([^ ;)]+)/.exec(line);
+    const numbered = numbering.get(name);
     projects.push({
       name,
-      group: groupOf(line),
+      group: numbered?.group || WORK_GROUP,
+      number: numbered?.display ?? null,
       path: embedded ? embedded[1] : join(FM_HOME, 'projects', name),
     });
   }
@@ -344,8 +361,10 @@ async function readRegistry() {
 }
 
 // --- 2. per-project git health (all projects concurrently) -----------------
-async function projectHealth({ name, path }) {
-  const base = { name, path };
+async function projectHealth({ name, path, number }) {
+  // number rides through untouched: it is the captain's handle for the project,
+  // so nothing a git read discovers may change it.
+  const base = { name, path, number };
   if (!existsSync(path) || !(await gitOrNull(path, ['rev-parse', '--is-inside-work-tree']))) {
     return { ...base, available: false, reason: 'no git checkout at this path' };
   }
@@ -448,11 +467,28 @@ function waitingKindOf(task) {
 // The captain-facing reason he is wanted. A captain hold reason is a sentence
 // firstmate already wrote FOR him, so it beats any label composed here; raw
 // current-state detail is evidence, never captain-facing prose.
+// An open decision is a RECORD, not a string: the canonical reader returns
+// {key,verb,summary}. Reading it as text is what put "[object Object]" on the
+// board where the reason should be. The summary is a worker's own status prose
+// and can run to paragraphs, so the row carries the opening of it - enough to
+// recognize which call is owed, with the whole thing where he answers it.
+const DECISION_NOTE_MAX = 220;
+function decisionNote(decision) {
+  if (decision == null) return '';
+  const text = typeof decision === 'string'
+    ? decision
+    : String(decision.summary || decision.key || '');
+  const flat = text.replace(/\s+/g, ' ').trim();
+  return flat.length > DECISION_NOTE_MAX ? `${flat.slice(0, DECISION_NOTE_MAX - 1)}…` : flat;
+}
+
 function waitingNoteOf(task) {
   const decisions = task.hints?.open_decisions || [];
   if (task.backlog?.hold_reason) return task.backlog.hold_reason;
   if (task.backlog?.blocked_reason) return task.backlog.blocked_reason;
-  if (decisions.length > 0) return decisions.map(String).join('; ');
+  if (decisions.length > 0) {
+    return decisions.map(decisionNote).filter(Boolean).join('; ');
+  }
   if (task.current_state?.state === 'parked' && /ask-user/.test(task.current_state?.detail || '')) {
     return 'Its own review raised a call it is not allowed to make.';
   }
@@ -507,6 +543,10 @@ async function liveWork() {
     const presence = await presenceOf(task);
     return {
       id: task.id,
+      // The number the canonical fleet reader already decided, suffix and all.
+      // This page derives no number of its own, exactly as it derives no
+      // current state: one owner, so a row and a card cannot disagree.
+      number: task.number_display || '--',
       project: task.backlog?.repo || task.project?.split('/').filter(Boolean).pop() || 'unregistered',
       title: task.backlog?.title || null,
       activity: activityOf(task),
@@ -578,6 +618,13 @@ h2 { font-size: .95rem; font-weight: 700; margin: 0 0 10px; }
 }
 .row.wants { border-left-color: var(--critical); background: var(--critical-soft); }
 .row.conn { border-left-color: var(--info); background: var(--info-soft); }
+/* The number leads the row in exactly the reading the project cards use -
+   same font, same width, same two digits - because it is the same number, and
+   the captain has to be able to say it aloud from either half of the page. */
+.row-num {
+  font-family: var(--font-mono); font-size: .95rem; font-weight: 700;
+  color: var(--text-primary); font-variant-numeric: tabular-nums;
+}
 .row-project { font-weight: 700; }
 .row-id { font-family: var(--font-mono); font-size: .78rem; color: var(--text-muted); }
 .row-activity { color: var(--text-secondary); }
@@ -751,7 +798,9 @@ function renderLive(live, observedAt) {
     return `<div class="${classes('row', flag)}">
   <div>
     ${lines(
-    `<div><span class="row-project">${esc(task.project)}</span> <span class="row-id">${esc(task.id)}</span></div>`,
+    `<div><span class="row-num">${esc(task.number)}</span>`
+      + ` <span class="row-project">${esc(task.project)}</span>`
+      + ` <span class="row-id">${esc(task.id)}</span></div>`,
     `<div class="row-activity">${esc(task.activity)}</div>`,
     task.waiting.note && `<div class="row-note">${esc(task.waiting.note)}</div>`,
     task.prUrl && `<div class="row-note"><a href="${esc(task.prUrl)}">${esc(task.prUrl)}</a></div>`,
@@ -778,8 +827,11 @@ function renderProjects(projects) {
   const summary = `<div class="summary"><b>${projects.length}</b> projects`
     + ` · <b>${uncommitted}</b> uncommitted · <b>${offDefault}</b> off default branch`
     + (unavailable ? ` · <b>${unavailable}</b> unavailable` : '') + '</div>';
-  const cards = projects.map((project, index) => {
-    const num = String(index + 1).padStart(2, '0');
+  const cards = projects.map((project) => {
+    // The captain's own number for this project, as its owner writes it. A
+    // project the scheme cannot number shows that plainly rather than borrowing
+    // its neighbour's position, because a wrong number is worse than none.
+    const num = project.number ?? '--';
     if (!project.available) {
       return `<div class="card unavailable">
   <div class="card-head"><span class="num">${num}</span><span class="proj-name">${esc(project.name)}</span></div>
@@ -872,7 +924,7 @@ let lastStamp = null;
 // to the open page that this command is still reading.
 async function cycle() {
   const started = Date.now();
-  const registry = await readRegistry();
+  const registry = await readRegistry(await readNumbering());
   // This board's projects, still in registry order, so the number on a card is
   // its position on THIS board and holds still while other boards change.
   const mine = registry.filter((project) => project.group === opts.group);

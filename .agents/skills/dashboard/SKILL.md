@@ -106,14 +106,22 @@ number is the captain's handle for the project - he reads it aloud to name one.
 So a board never sorts worst-first: a number that moved when a project's status
 changed would be worse than no number at all.
 Attention shows as color instead.
-Numbering is per board, so a project's number is its position among the
-projects he sees beside it, and moving a project between boards renumbers both.
+
+The board does not decide those numbers.
+`bin/fm-task-number-lib.sh` is their single owner and its header owns the
+scheme, including which board a project is on; this page reads its table and
+takes a live row's number from the fleet snapshot, which resolves it through
+that same owner.
+That is why a card and a row can never disagree about what #7 is, and why the
+number a task's own terminal is named after is the same number again.
 
 Every project card is a fixed size, and the last five commits appear on hover in
 an overlay, so the grid cannot reflow and hovering cannot resize a card.
 
 ## Live work
 
+Each row leads with the captain's number for that work, in the same reading the
+project cards use, so he can say it back without reading a name.
 One row per running task, ranked so whatever wants the captain is at the top: a
 failure first, then a blocker, a decision he owes, and work finished and waiting
 to be approved.
@@ -155,7 +163,8 @@ another one, so this board is also the fallback: an unmarked project shows up
 here.
 `+personal` in a project's annotation bracket moves it to
 `/dashboard-personal`; `bin/fm-project-mode.sh`'s header owns that line's
-format and `bin/fm-dashboard.mjs`'s header owns what the marker means.
+format and `bin/fm-task-number-lib.sh` reads the marker, because a board and
+its numbers are one decision.
 
 Moving a project between boards is that one-line registry edit and it is the
 captain's call - never reassign a project's board on your own.

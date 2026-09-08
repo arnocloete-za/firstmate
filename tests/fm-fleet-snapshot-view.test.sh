@@ -197,6 +197,98 @@ test_fixture_snapshot_json() {
   pass "fixture snapshot covers task rows, backlog rows, pointers, and stable ordering"
 }
 
+# The captain's number rides on every task row, because this snapshot is what
+# firstmate reads before it writes to him: he must be able to lead with "#07"
+# without guessing. bin/fm-task-number-lib.sh owns the number; this snapshot
+# adds only the suffix that keeps a collision tellable apart.
+test_task_rows_carry_the_captains_number() {
+  local home fakebin out view
+  home=$(make_home numbering)
+  fakebin=$(make_fakebin "$home")
+  cat > "$home/data/projects.md" <<REG
+# Projects
+
+- alpha [no-mistakes] - first work project (added 2026-01-01)
+- beta [no-mistakes] - second work project (added 2026-01-01)
+- side [local-only +personal] - a personal project (added 2026-01-01)
+REG
+  # Derived from the registry: no record of a number, so the project's own
+  # position answers.
+  fm_write_meta "$home/state/on-beta.meta" \
+    "window=firstmate:fm-on-beta" "worktree=$home/projects/wt-beta" \
+    "project=$home/projects/beta" "harness=codex" "kind=ship"
+  fm_write_meta "$home/state/on-side.meta" \
+    "window=firstmate:fm-50-on-side" "worktree=$home/projects/wt-side" \
+    "project=$home/projects/side" "harness=codex" "kind=ship" "number=50"
+  # Work outside the registry carries the pool number it was allocated.
+  fm_write_meta "$home/state/off-registry.meta" \
+    "window=firstmate:fm-100-off-registry" "worktree=$home/projects/wt-off" \
+    "project=$home/projects/unregistered" "harness=codex" "kind=ship" "number=100"
+  # A secondmate is a persistent home rather than a piece of work on a project.
+  fm_write_secondmate_meta "$home/state/mate.meta" "$home/secondmate-home"
+
+  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$SNAPSHOT" --json)
+  printf '%s' "$out" | jq -e '
+    .tasks[] | select(.id == "on-beta") | .number == 2 and .number_display == "02"
+  ' >/dev/null || fail "a task must take its project's registry number: $out"
+  printf '%s' "$out" | jq -e '
+    .tasks[] | select(.id == "on-side") | .number == 50 and .number_display == "50"
+  ' >/dev/null || fail "a personal project's task must carry its personal number: $out"
+  printf '%s' "$out" | jq -e '
+    .tasks[] | select(.id == "off-registry") | .number == 100 and .number_display == "100"
+  ' >/dev/null || fail "work off the registry must carry its allocated pool number: $out"
+  printf '%s' "$out" | jq -e '
+    .tasks[] | select(.id == "mate") | .number == null and .number_display == null
+  ' >/dev/null || fail "a secondmate must carry no number rather than a guessed one: $out"
+  # The human view firstmate reads leads each row with the same number, so it
+  # can name a piece of work by number without composing one.
+  view=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$VIEW")
+  assert_contains "$view" "| 02 | on-beta |" "the fleet view must lead a task row with its number"
+  assert_contains "$view" "| 100 | off-registry |" "the fleet view must lead pool-numbered work with its number"
+  assert_contains "$view" "| - | mate |" "the fleet view must show a secondmate as unnumbered rather than guessing"
+  pass "every task row carries the captain's number, and unnumbered work says so"
+}
+
+# His one-piece-of-work-at-a-time rule means a suffix should never appear. If it
+# ever does, two rows both reading #02 with no way to tell them apart would be
+# worse than the anomaly, so the display stays honest and he can still say
+# "#02b" out loud.
+test_two_tasks_on_one_number_stay_tellable_apart() {
+  local home fakebin out
+  home=$(make_home numbering-collision)
+  fakebin=$(make_fakebin "$home")
+  cat > "$home/data/projects.md" <<REG
+# Projects
+
+- alpha [no-mistakes] - first work project (added 2026-01-01)
+- beta [no-mistakes] - second work project (added 2026-01-01)
+REG
+  fm_write_meta "$home/state/beta-first.meta" \
+    "window=firstmate:fm-02-beta-first" "worktree=$home/projects/wt-1" \
+    "project=$home/projects/beta" "harness=codex" "kind=ship" "number=2"
+  fm_write_meta "$home/state/beta-second.meta" \
+    "window=firstmate:fm-02-beta-second" "worktree=$home/projects/wt-2" \
+    "project=$home/projects/beta" "harness=codex" "kind=ship" "number=2"
+  fm_write_meta "$home/state/on-alpha.meta" \
+    "window=firstmate:fm-01-on-alpha" "worktree=$home/projects/wt-3" \
+    "project=$home/projects/alpha" "harness=codex" "kind=ship" "number=1"
+
+  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$SNAPSHOT" --json)
+  printf '%s' "$out" | jq -e '
+    (.tasks[] | select(.id == "beta-first") | .number_display) == "02a"
+      and (.tasks[] | select(.id == "beta-second") | .number_display) == "02b"
+  ' >/dev/null || fail "two tasks sharing a number must be tellable apart: $out"
+  printf '%s' "$out" | jq -e '
+    (.tasks[] | select(.id == "beta-first") | .number) == 2
+      and (.tasks[] | select(.id == "beta-second") | .number) == 2
+  ' >/dev/null || fail "the suffix must not change the number itself: $out"
+  # A number only one task holds stays plain, so a suffix always MEANS something.
+  printf '%s' "$out" | jq -e '
+    (.tasks[] | select(.id == "on-alpha") | .number_display) == "01"
+  ' >/dev/null || fail "a number one task holds must stay plain: $out"
+  pass "two tasks sharing one number read as 02a and 02b rather than as one number twice"
+}
+
 # R1 owner contract: main_inventory discloses orphan in-flight and unstructured
 # current rows without inventing task rows.
 test_main_inventory_orphan_and_unstructured_disclosure() {
@@ -588,16 +680,16 @@ test_view_renders_snapshot() {
   write_fixture "$home"
   fakebin=$(make_fakebin "$home")
   view=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$VIEW")
-  assert_contains "$view" "| ship-task | working / pane | ship | alpha | tmux | present | https://github.com/kunchenguid/firstmate/pull/9" \
-    "view should render ship row from snapshot"
+  assert_contains "$view" "| - | ship-task | working / pane | ship | alpha | tmux | present | https://github.com/kunchenguid/firstmate/pull/9" \
+    "view should render ship row from snapshot, led by the captain's number"
   assert_contains "$view" "| queued-task | Queued Task | alpha | ship | ship-task | -" \
     "view should render queued backlog row"
   assert_contains "$view" "| done-task | Done Task | alpha | ship | - | https://github.com/kunchenguid/firstmate/pull/7 |" \
     "view should render done backlog row"
   assert_contains "$view" "bin/fm-send.sh fm-secondmate-task" \
     "view should show secondmate send guidance"
-  assert_contains "$view" "| secondmate-task | working / status-log | secondmate | $home/secondmate-home | tmux | present / alive |" \
-    "view should show secondmate endpoint agent liveness"
+  assert_contains "$view" "| - | secondmate-task | working / status-log | secondmate | $home/secondmate-home | tmux | present / alive |" \
+    "view should show secondmate endpoint agent liveness and no number of its own"
   assert_not_contains "$view" "fm-peek.sh fm-secondmate-task" \
     "view must not tell firstmate to routinely peek secondmates"
   pass "fleet view renders the snapshot without secondmate peek guidance"
@@ -899,6 +991,8 @@ EOF
 test_empty_fleet_json
 test_fixture_snapshot_json
 test_home_summary_excludes_secondmate_from_child_inventory
+test_task_rows_carry_the_captains_number
+test_two_tasks_on_one_number_stay_tellable_apart
 test_main_inventory_orphan_and_unstructured_disclosure
 test_normalized_roles_and_plural_blocker_readiness
 test_event_hints_follow_reconciled_current_state

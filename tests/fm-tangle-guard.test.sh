@@ -249,8 +249,11 @@ test_spawn_tmux_window_construction() {
   assert_contains "$out" "spawned rec-win-gg7" "recording spawn did not report success"
 
   # Bug 1 fix: append-form window creation (trailing colon on the session target).
-  assert_grep "new-window -dP -F #{window_id} -t firstmate: -n fm-rec-win-gg7" "$rec" \
-    "new-window must append at the session (trailing colon) and capture the window id"
+  # The window is named for the captain's number as well as the task, so finding
+  # a terminal is reading a number; this project is registered nowhere, so its
+  # work takes the pool's first number (bin/fm-task-number-lib.sh).
+  assert_grep "new-window -dP -F #{window_id} -t firstmate: -n fm-100-rec-win-gg7" "$rec" \
+    "new-window must append at the session (trailing colon), name the window for its number, and capture the window id"
   assert_no_grep "new-window -dP -F #{window_id} -t firstmate -n" "$rec" \
     "new-window must not target the bare session name (collides under base-index 1)"
 

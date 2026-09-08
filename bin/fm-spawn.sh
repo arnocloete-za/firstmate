@@ -256,6 +256,13 @@
 # needed no change: for the project workspace it equals project=.
 # Every fresh spawn or relaunch records a new spawn_gen= incarnation token so durable
 # consumers can distinguish a replacement worker that reuses the same task id.
+# number= is the captain's own number for this piece of work, resolved once here
+# by bin/fm-task-number-lib.sh (the scheme's single owner) and recorded so it is
+# frozen for the life of the terminal it names. It leads the endpoint label -
+# fm-<number>-<id> - so finding a terminal is reading a number. A secondmate is
+# a persistent home rather than a piece of work on a project, so it records no
+# number= and keeps the historical fm-<id> label - the same label every task
+# record written before numbering existed still validates against unchanged.
 # When the home session's frozen trace-context decision is enabled (see
 # docs/configuration.md and bin/fm-trace-context-lib.sh), the meta also records
 # one W3C traceparent= carrier, the same value injected into the pane as
@@ -2295,7 +2302,25 @@ if [ -e "$STATE/$ID.backlog-close" ] || [ -L "$STATE/$ID.backlog-close" ]; then
   exit 1
 fi
 
-W="fm-$ID"
+# The captain's number for this piece of work, and with it the terminal's own
+# name (bin/fm-task-number-lib.sh owns the scheme and the label). A registered
+# project's number is pure derivation, so this call only ALLOCATES for work on a
+# project he never registered; either way the resolved number is recorded in the
+# task's record below, which is what freezes it for the life of this terminal.
+# A relaunch keeps the recorded number rather than resolving a new one, because
+# it adopts the terminal that already exists.
+# A secondmate is a persistent home rather than a piece of work on a project, so
+# it takes no number and keeps the historical label.
+# Allocation needs no lock of its own: spawning is a locked fleet mutation, and
+# batch dispatch is serial, so two tasks can only share a number through the
+# same one-task-per-project anomaly the fleet snapshot already discloses.
+TASK_NUMBER=
+if [ "$RELAUNCH" -eq 1 ]; then
+  TASK_NUMBER=$(fm_task_number_recorded_in "$RELAUNCH_META" 2>/dev/null || true)
+elif [ "$KIND" != secondmate ]; then
+  TASK_NUMBER=$(fm_task_number_allocate "$DATA" "$STATE" "$PROJ_ABS" 2>/dev/null || true)
+fi
+W=$(fm_task_number_label "$ID" "$TASK_NUMBER")
 if [ "$RELAUNCH" -eq 1 ]; then
   # Adopt the recorded endpoint instead of creating one. This is what keeps a
   # relaunch a REPLACEMENT rather than a second copy of the task: no new
@@ -3136,7 +3161,7 @@ SPAWN_META_PATH=$SPAWN_META_TMP
 preserve_relaunch_meta() {
   awk -F= '
     BEGIN {
-      split("window endpoint_task_id worktree project harness kind mode yolo workspace branch tasktmp model effort busy_gen spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
+      split("window endpoint_task_id number worktree project harness kind mode yolo workspace branch tasktmp model effort busy_gen spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
       for (i in keys) owned[keys[i]] = 1
     }
     !($1 in owned)
@@ -3145,6 +3170,9 @@ preserve_relaunch_meta() {
 {
   echo "window=$META_WINDOW"
   echo "endpoint_task_id=$ID"
+  # The captain's number for this work, absent only for a secondmate, which is
+  # what keeps the historical fm-<id> label valid for a persistent home.
+  [ -z "$TASK_NUMBER" ] || echo "number=$TASK_NUMBER"
   echo "worktree=$WT"
   echo "project=$PROJ_ABS"
   echo "harness=$HARNESS"

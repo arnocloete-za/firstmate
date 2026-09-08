@@ -342,7 +342,7 @@ fm_send_resolve_target() {  # <raw-target>
       TARGET_BACKEND=remote
       TARGET_META=$meta
       TARGET_HARNESS=$(fm_meta_get "$meta" harness)
-      EXPECTED_LABEL="fm-$id"
+      EXPECTED_LABEL=$(fm_task_label_of_meta "$meta" "$id")
       TARGET_SELECTOR=1
       TARGET_REMOTE_ID=$id
       TARGET_REMOTE_HOST=$(fm_meta_get "$meta" remote_host)
@@ -383,7 +383,7 @@ fm_send_resolve_target() {  # <raw-target>
     session=$(fm_meta_get "$pane_meta" herdr_session)
     hint="${session:-<herdr-session>}:$raw"
     id=$(fm_send_id_from_meta "$pane_meta")
-    echo "error: target '$raw' matches herdr_pane_id in $pane_meta but is missing its herdr session prefix; expected <herdr-session>:<pane-id> such as '$hint' or use 'fm-$id' (tried meta=$STATE/$raw.meta; backend=herdr)" >&2
+    echo "error: target '$raw' matches herdr_pane_id in $pane_meta but is missing its herdr session prefix; expected <herdr-session>:<pane-id> such as '$hint' or use '$id' (tried meta=$STATE/$raw.meta; backend=herdr)" >&2
     return 1
   fi
 
