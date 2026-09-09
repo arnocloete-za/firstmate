@@ -1616,6 +1616,77 @@ test_project_branch_relaunch_refuses_a_directory_moved_off_the_branch() {
   pass "fm-spawn --relaunch: a project directory moved off the batch branch refuses, naming the recorded one"
 }
 
+test_project_branch_relaunch_proves_its_own_wiring_through_a_symlinked_state_dir() {
+  local dir out rc state_real
+  dir=$(new_case pb-symlink rl42)
+  # A firstmate home reached through a symlink, so FM_HOME/state and its physical
+  # path differ. fm-spawn embeds the PHYSICAL one in the claude wiring it writes,
+  # so the dispatch guard that decides whether a file at one of those in-directory
+  # paths is the captain's has to resolve the same way. Read raw, this task's OWN
+  # wiring from its first launch reads as the captain's and every relaunch refuses.
+  mv "$dir/home" "$dir/home-real"
+  ln -s home-real "$dir/home"
+  add_project_branch_task "$dir" rl42 batch/autumn claude
+  state_real=$(cd "$dir/home-real/state" && pwd -P)
+  mkdir -p "$dir/proj/.claude"
+  printf '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"touch %s/rl42.turn-ended"}]}]}}\n' \
+    "$state_real" > "$dir/proj/.claude/settings.local.json"
+  printf 'zsh' > "$dir/fake/command"
+  out=$(run_spawn "$dir" rl42 --relaunch); rc=$?
+  expect_code 0 "$rc" "this task's own wiring must not block its relaunch through a symlinked state dir"$'\n'"$out"
+  assert_grep "$state_real/rl42.turn-ended" "$dir/proj/.claude/settings.local.json" \
+    "the replacement's wiring should have been rewritten in the project directory"
+  [ "$(meta_field "$dir" rl42 branch)" = batch/autumn ] \
+    || fail "the batch branch must survive the relaunch"
+  pass "fm-spawn --relaunch: a project-branch task's own wiring is proven its own through a symlinked state dir"
+}
+
+test_project_branch_harness_switch_leaves_the_captains_wiring_in_place() {
+  local dir out rc before
+  dir=$(new_case pb-wiring rl43)
+  add_project_branch_task "$dir" rl43 batch/autumn claude
+  # The captain has since put his OWN claude settings in the directory this task
+  # works in. Retiring the previous harness's wiring on a switch may not take a
+  # file that cannot be proven to be this task's, exactly as cleanup may not.
+  mkdir -p "$dir/proj/.claude"
+  printf '{"hooks":{}}\n' > "$dir/proj/.claude/settings.local.json"
+  before=$(cat "$dir/proj/.claude/settings.local.json")
+  printf 'codex' > "$dir/fake/becomes"
+  out=$(run_control "$dir" rl43 relaunch --harness codex --note "switching runtime"); rc=$?
+  expect_code 0 "$rc" "a harness switch on a project-branch task should succeed"$'\n'"$out"
+  [ -f "$dir/proj/.claude/settings.local.json" ] \
+    || fail "the captain's own settings file was deleted from his project directory"
+  [ "$(cat "$dir/proj/.claude/settings.local.json")" = "$before" ] \
+    || fail "the captain's own settings file was rewritten"
+  assert_contains "$out" "cannot be proven to be this task's own agent wiring" \
+    "the retained file should be reported rather than silently left"
+  [ "$(meta_field "$dir" rl43 harness)" = codex ] || fail "the record should follow the switch"
+  pass "fm-control relaunch: a harness switch in the captain's directory leaves wiring it cannot prove is ours"
+}
+
+test_project_branch_relaunch_refuses_a_record_with_no_batch_branch() {
+  local dir out rc before
+  dir=$(new_case pb-nobranch rl44)
+  add_project_branch_task "$dir" rl44 batch/autumn claude
+  # A malformed record: no batch branch at all, and a brief carrying no delivery
+  # contract line, so nothing upstream refuses first. The directory is left at a
+  # detached HEAD, which is exactly what an empty recorded branch reads as.
+  grep -v '^branch=' "$dir/home/state/rl44.meta" > "$dir/home/state/rl44.meta.tmp"
+  mv "$dir/home/state/rl44.meta.tmp" "$dir/home/state/rl44.meta"
+  grep -v '^Delivery contract:' "$dir/home/data/rl44/brief.md" > "$dir/home/data/rl44/brief.tmp"
+  mv "$dir/home/data/rl44/brief.tmp" "$dir/home/data/rl44/brief.md"
+  git -C "$dir/proj" checkout --quiet --detach
+  printf 'zsh' > "$dir/fake/command"
+  before=$(cat "$dir/home/state/rl44.meta")
+  out=$(run_spawn "$dir" rl44 --relaunch); rc=$?
+  expect_code 1 "$rc" "a record with no batch branch must refuse rather than pass against a detached HEAD"
+  assert_contains "$out" "no batch branch is recorded for this task" \
+    "the refusal should name the missing recorded branch"
+  [ "$(cat "$dir/home/state/rl44.meta")" = "$before" ] \
+    || fail "the refused relaunch changed the task record"
+  pass "fm-spawn --relaunch: an empty recorded batch branch refuses instead of matching a detached HEAD"
+}
+
 test_same_harness_relaunch_keeps_identity_and_reuses_the_endpoint
 test_relaunch_preserves_durable_task_metadata
 test_relaunch_serializes_concurrent_durable_metadata_publication
@@ -1669,5 +1740,8 @@ test_project_branch_relaunch_adopts_the_recorded_batch_branch
 test_spawn_relaunch_of_a_project_branch_task_needs_no_branch_flag
 test_project_branch_relaunch_still_refuses_a_brief_naming_another_branch
 test_project_branch_relaunch_refuses_a_directory_moved_off_the_branch
+test_project_branch_relaunch_proves_its_own_wiring_through_a_symlinked_state_dir
+test_project_branch_harness_switch_leaves_the_captains_wiring_in_place
+test_project_branch_relaunch_refuses_a_record_with_no_batch_branch
 test_relaunch_reverifies_an_already_in_flight_item_instead_of_rewriting_it
 test_relaunch_moves_a_drifted_item_back_in_flight

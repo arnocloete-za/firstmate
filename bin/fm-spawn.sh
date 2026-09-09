@@ -835,6 +835,7 @@ RELAUNCH_REPLACEMENT_BUSY_GEN=
 RELAUNCH_REPLACEMENT_HARNESS=
 RELAUNCH_REPLACEMENT_STATE=
 RELAUNCH_REPLACEMENT_WT=
+RELAUNCH_REPLACEMENT_WORKSPACE=isolated
 CONFIG_INHERIT_LOCK=
 CONFIG_INHERIT_LOCK_HELD=0
 
@@ -880,7 +881,8 @@ spawn_abort_cleanup() {
         "$RELAUNCH_REPLACEMENT_HARNESS" \
         "$RELAUNCH_REPLACEMENT_WT" \
         "$RELAUNCH_REPLACEMENT_STATE" \
-        "$ID"; then
+        "$ID" \
+        "$RELAUNCH_REPLACEMENT_WORKSPACE"; then
       echo "warning: could not remove replacement wiring after aborted relaunch of $ID" >&2
     fi
     if [ -n "$RELAUNCH_REPLACEMENT_BUSY_GEN" ]; then
@@ -999,7 +1001,7 @@ spawn_herdr_presentation_order_lock_acquire() {
 }
 
 clear_relaunch_harness_wiring() {
-  local harness=$1 wt=$2 state=$3 id=$4 token_path token auth_path path
+  local harness=$1 wt=$2 state=$3 id=$4 workspace=$5 token_path token auth_path path
   # The wiring arms above match on harness PREFIXES, because a task launched
   # from a raw command records that command's basename rather than the exact
   # adapter name. The retirement tables are keyed by the exact adapter, so the
@@ -1019,6 +1021,24 @@ clear_relaunch_harness_wiring() {
   fi
   while IFS= read -r path; do
     [ -n "$path" ] || continue
+    [ -e "$path" ] || [ -L "$path" ] || continue
+    # In a disposable copy every one of these paths is this task's own, so the
+    # whole set goes. In the project workspace the worktree IS the captain's
+    # registered directory, and a file at one of these paths that we cannot prove
+    # we wrote is his: it is reported and left exactly where it is, the same
+    # proof and the same outcome fm-teardown.sh applies on the way out
+    # (bin/fm-project-branch-lib.sh owns both). Leaving it is not a failure -
+    # nothing of this task's is stale there - so the relaunch still proceeds.
+    if [ "$workspace" = project ]; then
+      case $path in
+        "$wt"/*)
+          if ! fm_project_branch_wiring_is_ours "$path" "$state" "$id"; then
+            echo "warning: leaving $path in place: it cannot be proven to be this task's own agent wiring" >&2
+            continue
+          fi
+          ;;
+      esac
+    fi
     rm -f -- "$path" || return 1
   done <<EOF
 $(fm_control_harness_wiring_paths "$harness" "$wt" "$state" "$id")
@@ -2062,7 +2082,15 @@ if [ "$WORKSPACE" = project ]; then
   # directory for several harnesses. In a disposable copy those files are ours to
   # overwrite; here an existing file at one of those paths is the captain's, so
   # the spawn refuses rather than clobbering it.
-  fm_project_branch_require_no_wiring_conflict "$HARNESS" "$PROJ_ABS" "$STATE" "$ID" || exit 1
+  #
+  # The proof that a shared-basename file is this task's own reads the state path
+  # embedded in the file's CONTENT, and the wiring written below embeds the
+  # PHYSICAL one ($STATE_REAL). Resolving the same way here is what keeps a
+  # symlinked home from making this task's own wiring look like the captain's and
+  # refusing every relaunch; fm-teardown.sh resolves it identically for the
+  # matching cleanup proof.
+  STATE_REAL_FOR_WIRING=$(CDPATH='' cd -- "$STATE" 2>/dev/null && pwd -P) || STATE_REAL_FOR_WIRING=$STATE
+  fm_project_branch_require_no_wiring_conflict "$HARNESS" "$PROJ_ABS" "$STATE_REAL_FOR_WIRING" "$ID" || exit 1
 fi
 
 # The other side of that same choice, and the reason the refusals above are worth
@@ -2829,7 +2857,7 @@ if [ "$RELAUNCH" -eq 1 ]; then
   # files and turn-end token registry entries behind, and even a same-harness
   # relaunch would orphan the retired busy generation's token
   # (bin/fm-control-lib.sh owns where those artifacts live).
-  clear_relaunch_harness_wiring "$RELAUNCH_PRIOR_HARNESS" "$WT" "$STATE_REAL" "$ID" || {
+  clear_relaunch_harness_wiring "$RELAUNCH_PRIOR_HARNESS" "$WT" "$STATE_REAL" "$ID" "$WORKSPACE" || {
     echo "error: could not retire $RELAUNCH_PRIOR_HARNESS wiring for task $ID; refusing to arm the replacement" >&2
     exit 1
   }
@@ -2837,6 +2865,7 @@ if [ "$RELAUNCH" -eq 1 ]; then
   RELAUNCH_REPLACEMENT_HARNESS=$HARNESS
   RELAUNCH_REPLACEMENT_STATE=$STATE_REAL
   RELAUNCH_REPLACEMENT_WT=$WT
+  RELAUNCH_REPLACEMENT_WORKSPACE=$WORKSPACE
 fi
 if [ "$KIND" != secondmate ]; then
   # Arm the semantic busy-state contract (bin/fm-busy-lib.sh) for every

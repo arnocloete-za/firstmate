@@ -71,6 +71,7 @@ It is not deterministic across the verified adapters: codex and grok resume only
 4. **Stop the old agent** through the `exit` verb, with its postcondition.
 5. **Launch the replacement** through its single owner, `bin/fm-spawn.sh --relaunch`, which adopts the recorded endpoint and worktree instead of creating either, clears the previous harness's per-task wiring, and arms a fresh busy generation.
    A `workspace=project` task's batch branch is adopted from that same record rather than passed as a flag, so `--branch` is refused alongside `--relaunch`, and the replacement's instructions and the project directory are both re-proven against the recorded branch.
+   That wiring clear applies the same ownership proof cleanup uses when the worktree is the captain's own directory, so a file at one of those paths that cannot be proven to be this task's own is reported and left exactly where it is.
 
 Switching harness is therefore one ordinary relaunch rather than a separate mechanism.
 

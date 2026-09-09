@@ -226,6 +226,7 @@ Work never happens on the default branch, nothing is reset to make room, and thi
 
 A batch branch belongs to a batch of work rather than to one task, so nothing derives it from a task id and several tasks may land on one branch over its life.
 Because the model owns nothing, it allocates, resets, detaches, deletes, and refreshes nothing: the base-freshness reset above is skipped, and teardown leaves the directory, the branch, and every commit on it exactly as they are, removing only wiring it can prove is its own.
+A relaunch retiring the previous harness's wiring obeys that same proof rather than its own, since what firstmate considers stale is still the captain's file if it cannot be shown to be this task's.
 Teardown's landed-work gate is therefore replaced by an uncommitted-changes gate, since commits are already durable in the captain's own repo while a dirty tree means an interrupted edit or the captain working there right now.
 A task's metadata records the model as `workspace=project` with its `branch=`; an absent `workspace=` means the isolated copy, so records predating the model keep their meaning.
 `backend=orca` is refused for it, because an Orca-allocated worktree is the very thing the model does without.
