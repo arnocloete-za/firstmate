@@ -1321,8 +1321,13 @@ families_for_changed_path() {
       # A shared helper or a shared test asset belongs to whichever suites name
       # it, found by the same reference scan. An asset is a driver a suite runs,
       # not a suite of its own, so a change to one selects its consumers.
-      families_for_test_reference "$(basename "$path")" \
-        || printf '%s\n' "__unmapped__:$path"
+      # A retired one has no consuming suite left to name it, the same rule the
+      # fixture and script cases below apply, so it selects nothing rather than
+      # refusing the whole selection.
+      if [ -e "$path" ]; then
+        families_for_test_reference "$(basename "$path")" \
+          || printf '%s\n' "__unmapped__:$path"
+      fi
       ;;
     tests/fixtures/*/*)
       # A fixture belongs to whichever suite reads its directory, found by the

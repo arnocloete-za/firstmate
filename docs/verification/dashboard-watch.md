@@ -6,7 +6,7 @@ This record supports the active guarantee that a `bin/fm-dashboard.mjs --watch` 
 `bin/fm-dashboard.mjs`'s header owns the watch contract; the internal [`dashboard` skill](../../.agents/skills/dashboard/SKILL.md) owns when to offer it.
 
 The page-side half is browser behavior, so a stub proves nothing about it: whether a `file://` page may load a sibling script, whether a cache-busting query defeats the file cache, whether a reload restores a scroll position, and whether a `<dialog>` reopened during a fresh load is really modal are all decided by the browser, not by this repository.
-`tests/fm-dashboard.test.sh` is the portable regression and pins everything the command publishes - change-only republication, the sidecar and its expiry, the stop path, and that a stopped watch leaves nothing staged.
+`tests/fm-dashboard.test.sh` is the portable regression and pins everything the command publishes - a watch cycle's change-only republication, a plain run's unconditional one, the sidecar and its expiry, the stop path, and that a stopped watch leaves nothing staged.
 The checks below are the ones only a browser can answer.
 
 Verified on 2026-09-07 with Google Chrome 151.0.7922.169 on Linux, driven through `chrome-devtools-axi`.
