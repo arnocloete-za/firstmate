@@ -1324,9 +1324,10 @@ async function publish(path, text) {
 const CONTENT_META = /<meta name="fm-dashboard-content" content="([^"]*)"/;
 let lastStamp = null;
 
-// One pass: read everything, publish the page only if the board changed, and
-// under --watch publish the stamp every time, because the stamp is what proves
-// to the open page that this command is still reading.
+// One pass: read everything, publish the page - always when the command was run
+// for it, and under --watch only when the board changed - and under --watch
+// publish the stamp every time, because the stamp is what proves to the open
+// page that this command is still reading.
 async function cycle() {
   const started = Date.now();
   const registry = await readRegistry(await readNumbering());
@@ -1376,7 +1377,15 @@ async function cycle() {
   await mkdir(dirname(out), { recursive: true, mode: 0o700 });
   const existing = await readFile(out, 'utf8').catch(() => null);
   const changed = CONTENT_META.exec(existing || '')?.[1] !== contentHash;
-  if (changed) {
+  // The two paths want opposite things, and the page itself says which is
+  // which: re-running the command IS the refresh, so a plain run always
+  // rewrites - handing the captain back a page stamped an hour ago, with a live
+  // section reading "read 60m ago", is the staleness he ran the command to
+  // answer. A watch cycle is the other half: nobody asked for that pass, the
+  // page is open in front of him, and republishing an unchanged board would
+  // throw away his scroll position and the overlay he has open. So the clock
+  // stays out of the hash and only the fleet moving may rewrite a watched page.
+  if (changed || !opts.watch) {
     await publish(out, render({
       generatedAt: localStamp(now),
       observedAt: live.observedAt || readAt,

@@ -183,6 +183,14 @@ plainly not to walk into a terminal on the strength of it.
 If he wants current state, the answer is to re-run `/dashboard`, or to leave a
 watch running (above) so the re-running happens for him.
 
+Those two are deliberately not the same.
+A command he ran himself always rewrites the page, so it is stamped with the
+minute he ran it even on a fleet that has not moved - handing back a board
+stamped an hour ago is the staleness he ran the command to answer.
+A watch cycle only rewrites the page when the board actually changed, because
+that page is open in front of him and republishing an unchanged board would cost
+him his scroll position and any overlay he has open.
+
 ## Which projects are on this board
 
 A project is on the work board unless its `data/projects.md` entry marks it onto
