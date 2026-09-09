@@ -1,0 +1,51 @@
+
+========== SCENE: the captain's own dashboard work, in his own project directory ==========
+$ cat $FM_HOME/state/dash7.meta
+window=fmses:fm-dash7
+endpoint_task_id=dash7
+worktree=<sandbox>/proj
+project=<sandbox>/proj
+harness=claude
+kind=ship
+mode=project-branch
+yolo=off
+workspace=project
+branch=batch/dashboard-polish
+tasktmp=/tmp/fm-dash7
+model=default
+effort=default
+
+$ git -C <sandbox>/proj symbolic-ref --short HEAD
+batch/dashboard-polish
+
+$ grep "^Delivery contract:" $FM_HOME/data/dash7/brief.md
+Delivery contract: mode=project-branch branch=batch/dashboard-polish
+
+========== The worker died mid-run; the captain puts a replacement on it. [AFTER the fix - target commit df3f730] ==========
+$ bin/fm-control.sh dash7 relaunch --note "died mid-run on the dashboard work"
+relaunched dash7 harness=claude from=claude model=default effort=default backend=tmux endpoint=fmses:fm-dash7 worktree=<sandbox>/proj
+[exit status: 0]
+
+========== AFTER: the state of the captain's work ==========
+$ cat $FM_HOME/state/dash7.meta
+window=fmses:fm-dash7
+endpoint_task_id=dash7
+worktree=<sandbox>/proj
+project=<sandbox>/proj
+harness=claude
+kind=ship
+mode=project-branch
+yolo=off
+workspace=project
+branch=batch/dashboard-polish
+tasktmp=/tmp/fm-dash7
+model=default
+effort=default
+busy_gen=g1788947246.2023625.13557
+spawn_gen=s1788947246.2022089.32207
+control_relaunch_tx=2020473.20260909T094726Z.874
+
+$ git -C <sandbox>/proj symbolic-ref --short HEAD
+batch/dashboard-polish
+
+# replacement agent launch commands actually sent to the terminal: 1

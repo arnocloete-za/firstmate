@@ -1,0 +1,16 @@
+
+========== SCENE: the captain keeps his own claude settings in that same directory ==========
+$ cat <sandbox>/proj/.claude/settings.local.json
+{"hooks":{},"captains_own":"do not touch"}
+
+========== The captain moves the dead worker's replacement to another harness. [BEFORE the review fix - commit b8b5905] ==========
+$ bin/fm-control.sh dash8 relaunch --harness codex --note "switching runtime after the crash"
+relaunched dash8 harness=codex from=claude model=default effort=default backend=tmux endpoint=fmses:fm-dash8 worktree=<sandbox>/proj
+[exit status: 0]
+
+========== AFTER: the captain's own file ==========
+$ cat <sandbox>/proj/.claude/settings.local.json
+cat: no such file - THE CAPTAIN'S FILE WAS DELETED
+
+$ grep "^harness=" $FM_HOME/state/dash8.meta
+harness=codex

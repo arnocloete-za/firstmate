@@ -1,0 +1,50 @@
+
+========== SCENE: the captain's own dashboard work, in his own project directory ==========
+$ cat $FM_HOME/state/dash7.meta
+window=fmses:fm-dash7
+endpoint_task_id=dash7
+worktree=<sandbox>/proj
+project=<sandbox>/proj
+harness=claude
+kind=ship
+mode=project-branch
+yolo=off
+workspace=project
+branch=batch/dashboard-polish
+tasktmp=/tmp/fm-dash7
+model=default
+effort=default
+
+$ git -C <sandbox>/proj symbolic-ref --short HEAD
+batch/dashboard-polish
+
+$ grep "^Delivery contract:" $FM_HOME/data/dash7/brief.md
+Delivery contract: mode=project-branch branch=batch/dashboard-polish
+
+========== The worker died mid-run; the captain puts a replacement on it. [BEFORE the fix - base commit 10ce4ff] ==========
+$ bin/fm-control.sh dash7 relaunch --note "died mid-run on the dashboard work"
+error: branch mismatch for dash7: the brief says branch=batch/dashboard-polish but this spawn passed --branch ; correct the flag or re-scaffold the brief so the worker's instructions and the task record agree
+error: the replacement agent for dash7 could not be launched on claude
+error: dash7's agent was stopped but the replacement did not launch; no agent is running, and its work plus the recorded progress note are preserved at <sandbox>/proj
+[exit status: 1]
+
+========== AFTER: the state of the captain's work ==========
+$ cat $FM_HOME/state/dash7.meta
+window=fmses:fm-dash7
+endpoint_task_id=dash7
+worktree=<sandbox>/proj
+project=<sandbox>/proj
+harness=claude
+kind=ship
+mode=project-branch
+yolo=off
+workspace=project
+branch=batch/dashboard-polish
+tasktmp=/tmp/fm-dash7
+model=default
+effort=default
+
+$ git -C <sandbox>/proj symbolic-ref --short HEAD
+batch/dashboard-polish
+
+# replacement agent launch commands actually sent to the terminal: 0
