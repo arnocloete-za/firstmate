@@ -57,7 +57,12 @@ make_case() {
   local name=$1 dir fakebin
   dir="$TMP_ROOT/$name"
   fakebin="$dir/fakebin"
-  mkdir -p "$dir/state" "$fakebin"
+  # The state root has to be private, exactly as a real one is: registering a
+  # process-event source refuses a group- or world-readable state directory.
+  # Creating it under the caller's umask makes a suite that arms one pass only on
+  # a machine whose umask already happens to be 077.
+  (umask 077; mkdir -p "$dir/state")
+  mkdir -p "$fakebin"
   cat > "$fakebin/tmux" <<'SH'
 #!/usr/bin/env bash
 set -u

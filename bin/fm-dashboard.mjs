@@ -71,19 +71,40 @@
 // publishes nothing at all, so a stop can never leave the board reporting things
 // as missing that were only unread.
 //
-// A cycle rewrites the page only when the board's own content changed. The
-// comparison is a hash over the rendered page with every per-run stamp
-// neutralized, carried in the page as <meta name="fm-dashboard-content">, so an
-// unchanged fleet leaves the file - and the captain's scroll position - alone.
+// Which run rewrites the page is deliberately asymmetric, and this is where
+// that rule lives.
+//
+// A run the captain asked for ALWAYS rewrites the page, because re-running the
+// command is the refresh - the page says so in its own header. Handing him back
+// a board stamped an hour ago, its live section reading "read 60m ago", is the
+// staleness he ran the command to answer, and a one-shot page has no sidecar to
+// bring those stamps forward in the tab.
+//
+// A WATCH cycle rewrites the page only when the board's own content changed.
+// Nobody asked for that pass, the page is open in front of him, and
+// republishing an unchanged board would throw away his scroll position and the
+// overlay he had open. The comparison is a hash over the rendered page with
+// every per-run stamp neutralized, carried in the page as
+// <meta name="fm-dashboard-content">, so an unchanged fleet leaves the file -
+// and where the captain was reading - alone.
+//
+// The CLOCK is neutralized along with those stamps, because it is not the board
+// changing: a relative age ("2h ago") and the recent-commit highlight are both
+// derived from an absolute instant the markup carries beside them, and the page
+// recomputes both in the tab. Left in the hash they would rewrite the page every
+// time a digit rolled over, which on a board of ten projects is most cycles -
+// each one throwing away the overlay the captain had open.
 //
 // How the open page notices, and why it cannot lie about its age: each cycle
 // also publishes one tiny sibling script, <page>.watch.js, carrying that content
 // hash, the instant of the read, and whether the watch is still running. The
 // page re-loads that one file every few seconds and reloads itself only when the
 // hash it carries differs from its own - never on a timer, and never backwards,
-// because a stamp older than the page it is offered to is ignored. Scroll
-// position rides across the reload in window.name, which needs no storage
-// permission a file:// page may not have.
+// because a stamp older than the page it is offered to is ignored. Where the
+// captain was reading rides across the reload in window.name, which needs no
+// storage permission a file:// page may not have: how far down the board he was,
+// and which project's overlay he had open, reopened by project NAME so a board
+// that gained or lost a project cannot reopen the wrong one.
 // The sidecar is therefore also the ONLY evidence the page has that the watch is
 // alive, and that evidence expires. Every stamp says when the next one is owed,
 // measured against what that pass actually cost, and "watching" is only ever
@@ -105,6 +126,10 @@
 // Clicking a project card opens that project's own overlay: everything the card
 // already shows, plus its last five commits, its latest version tag, and its
 // latest release note. It replaces the hover reveal the cards used to carry.
+//
+// An open overlay survives a watch refresh. The board is meant to be left open,
+// so a reload that closed what he was reading would make the watch worse than no
+// watch - he would lose the panel mid-sentence, and never see why.
 //
 // The overlay adds NO new reach: every word in it is baked into the page when
 // this command runs, out of the local checkout, exactly like the cards. Nothing
@@ -158,7 +183,7 @@
 // contract as the rest of bin/ (tests only).
 
 import { execFile } from 'node:child_process';
-import { mkdir, readdir, readFile, writeFile, rename, unlink } from 'node:fs/promises';
+import { mkdir, open, readdir, readFile, writeFile, rename, unlink } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -330,11 +355,14 @@ function localStamp(date) {
     + `${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
-function ago(iso) {
+// One definition of a relative age. It is shipped into the page verbatim by
+// `ago.toString()`, so the tab recomputes an age exactly as this command
+// rendered it and the two can never word the same instant differently.
+function ago(iso, now) {
   if (!iso) return '';
   const then = Date.parse(iso);
   if (Number.isNaN(then)) return '';
-  const mins = Math.round((Date.now() - then) / 60000);
+  const mins = Math.round((now - then) / 60000);
   if (mins < 1) return 'just now';
   if (mins < 60) return `${mins}m ago`;
   const hours = Math.round(mins / 60);
@@ -342,10 +370,25 @@ function ago(iso) {
   return `${Math.round(hours / 24)}d ago`;
 }
 
-const withinDays = (iso, days) => {
+const RECENT_DAYS = 7;
+const withinDays = (iso, days, now) => {
   const then = Date.parse(iso || '');
-  return !Number.isNaN(then) && (Date.now() - then) < days * 86400000;
+  return !Number.isNaN(then) && (now - then) < days * 86400000;
 };
+
+// Set only while the content hash is being computed. A relative age and the
+// recency highlight are the clock speaking, not the board changing, so the hash
+// is taken without them - otherwise "2h ago" turning into "3h ago" would rewrite
+// the page, and reload the captain's open overlay, on a fleet that never moved.
+// Nothing is lost by leaving them out: each is rendered beside the absolute
+// instant it is derived from, and the page recomputes both in the tab.
+let hashingClock = false;
+
+// Everything the clock alone decides is rendered from an absolute instant the
+// markup carries, and is left OUT of the content hash: see `hashingClock`.
+const agoTag = (iso) => `<span class="ago" data-at="${esc(iso || '')}">`
+  + `${hashingClock ? '' : esc(ago(iso, Date.now()))}</span>`;
+const recentFlag = (iso) => !hashingClock && withinDays(iso, RECENT_DAYS, Date.now()) && 'recent';
 
 // --- 1. the registry -------------------------------------------------------
 // Which board a project is on, and the number the captain reads aloud for it,
@@ -466,13 +509,28 @@ const ROOT_NOTE_FILES = ['release_notes.md', 'changelog.md', 'changes.md', 'news
 const NOTE_LIMIT = 20000;
 const NOTE_FILE = /^v?\d+(\.\d+)*\.md$/i;
 
+// Only ever as much as the page can show is read. A stray multi-megabyte
+// CHANGELOG.md is a file, not a reason to pull it into memory whole and then
+// throw all but the first 20KB away - and this command reads every project's
+// note at once, on every watch cycle.
 async function readNote(file, title, source) {
-  const text = await readFile(file, 'utf8').catch(() => null);
-  if (text === null || text.trim() === '') return null;
-  const clipped = text.length > NOTE_LIMIT;
-  return {
-    title, source, clipped, body: clipped ? text.slice(0, NOTE_LIMIT) : text,
-  };
+  const handle = await open(file, 'r').catch(() => null);
+  if (handle === null) return null;
+  let read;
+  try {
+    read = await handle.read(Buffer.alloc(NOTE_LIMIT + 1), 0, NOTE_LIMIT + 1, 0);
+  } catch (error) {
+    return null;
+  } finally {
+    await handle.close().catch(() => {});
+  }
+  const clipped = read.bytesRead > NOTE_LIMIT;
+  let text = read.buffer.toString('utf8', 0, clipped ? NOTE_LIMIT : read.bytesRead);
+  // A cut lands on a byte, which can be the middle of a character; half a
+  // character renders as a replacement glyph the note never contained.
+  if (clipped) text = text.replace(/\uFFFD+$/, '');
+  if (text.trim() === '') return null;
+  return { title, source, clipped, body: text };
 }
 
 async function latestReleaseNote(path) {
@@ -908,12 +966,29 @@ button.detail-close:hover { color: var(--text-primary); }
 // readAt only ever moves forward, and only a watch stamp moves it, so nothing
 // here can make an old page look young.
 const SCRIPT = `
+${ago.toString()}
+const RECENT_MS = ${RECENT_DAYS} * 86400000;
+// The clock's whole share of this page. Both are derived in the tab from the
+// absolute instant the markup carries beside them, which is why the command can
+// leave them out of its content hash: a board left open all day keeps telling
+// the truth about how old a commit is without being rewritten to say so.
+const paintClock = () => {
+  const now = Date.now();
+  for (const node of document.querySelectorAll('span.ago[data-at]')) {
+    node.textContent = ago(node.dataset.at, now);
+  }
+  for (const node of document.querySelectorAll('.commit[data-recent-at]')) {
+    const at = Date.parse(node.dataset.recentAt);
+    node.classList.toggle('recent', !Number.isNaN(at) && (now - at) < RECENT_MS);
+  }
+};
 const el = document.getElementById('live-age');
 let readAt = el ? Date.parse(el.dataset.at) : NaN;
 let watched = false;
 let dueBy = 0;
 const setReadAt = (iso) => { const t = Date.parse(iso); if (t > readAt) readAt = t; };
 const tick = () => {
+  paintClock();
   if (!el || Number.isNaN(readAt)) return;
   const age = Date.now() - readAt;
   const mins = Math.floor(age / 60000);
@@ -973,17 +1048,26 @@ dueBy = Date.parse(${js(dueBy)});
   const SRC = ${js(stampName)};
   const MINE = ${js(contentHash)};
   const RENDERED = Date.parse(${js(renderedAt)});
-  const KEY = 'fm-dashboard-scroll:';
-  // window.name survives a reload in the same tab and needs no storage
-  // permission, which a file:// page does not reliably have.
+  const KEY = 'fm-dashboard-view:';
+  // Where the captain was reading, carried across the reload: how far down the
+  // board, and which project's overlay he had open. window.name survives a
+  // reload in the same tab and needs no storage permission, which a file:// page
+  // does not reliably have.
+  const openDetail = () => document.querySelector('dialog.detail[open]');
+  const detailFor = (name) => [...document.querySelectorAll('dialog.detail')]
+    .find((dialog) => dialog.dataset.project === name);
   try {
     if (typeof window.name === 'string' && window.name.indexOf(KEY) === 0) {
-      const y = Number(window.name.slice(KEY.length));
+      const saved = window.name.slice(KEY.length);
       window.name = '';
-      if (Number.isFinite(y)) {
+      const view = JSON.parse(saved);
+      if (Number.isFinite(view.y)) {
         if ('scrollRestoration' in history) history.scrollRestoration = 'manual';
-        window.scrollTo(0, y);
+        window.scrollTo(0, view.y);
       }
+      // A project that has since left the board simply reopens nothing.
+      const reopen = view.open ? detailFor(view.open) : null;
+      if (reopen) reopen.showModal();
     }
   } catch (error) { /* a tab that will not hold a note still shows the board */ }
   window.fmDashboardStamp = (stamp) => {
@@ -994,7 +1078,12 @@ dueBy = Date.parse(${js(dueBy)});
     tick();
     if (!alive || stamp.content === MINE) return;
     if (!(Date.parse(stamp.readAt) > RENDERED)) return;
-    try { window.name = KEY + String(window.scrollY); } catch (error) { /* keep the reload */ }
+    try {
+      const open = openDetail();
+      window.name = KEY + JSON.stringify({
+        y: window.scrollY, open: open ? open.dataset.project : '',
+      });
+    } catch (error) { /* keep the reload */ }
     location.reload();
   };
   const poll = () => {
@@ -1099,7 +1188,7 @@ function renderVersion(tag) {
   if (tag.kind === 'bookkeeping-only') return '<div class="empty">No version tags yet.</div>';
   return `<div><span class="version">${esc(tag.ref)}</span>`
     + (tag.kind === 'tag' ? ' <span class="note-source">(not a version number)</span>' : '')
-    + `</div>\n<div class="version-when">tagged ${esc(ago(tag.date))}</div>`;
+    + `</div>\n<div class="version-when">tagged ${agoTag(tag.date)}</div>`;
 }
 
 function renderNote(note) {
@@ -1114,7 +1203,7 @@ function renderNote(note) {
 function renderCommits(commits) {
   if (commits.length === 0) return '<div class="empty">No commits yet.</div>';
   return `<div class="history"><ol>${commits.map((c) => (
-    `<li><span class="hash">${esc(c.hash)} ${esc(ago(c.date))}</span> · ${esc(c.author)}<br />${esc(c.subject)}</li>`
+    `<li><span class="hash">${esc(c.hash)} ${agoTag(c.date)}</span> · ${esc(c.author)}<br />${esc(c.subject)}</li>`
   )).join('')}</ol></div>`;
 }
 
@@ -1123,7 +1212,9 @@ function renderCommits(commits) {
 // focus is trapped while it is open and handed back to the card afterwards, and
 // none of that is ours to reimplement.
 function renderDetail(project, id, chips, commit) {
-  return `<dialog class="detail" id="${esc(id)}" aria-label="${esc(project.name)}">
+  // Keyed by project NAME, not by its position: a watch reload reopens the
+  // overlay the captain had open, and the card it belongs to may have moved.
+  return `<dialog class="detail" id="${esc(id)}" data-project="${esc(project.name)}" aria-label="${esc(project.name)}">
   <div class="detail-inner">
     <div class="detail-head">
       <span class="num">${project.number ?? '--'}</span>
@@ -1175,8 +1266,8 @@ function renderProjects(projects) {
       `<span class="${classes('chip', project.onDefault === false && 'off-default')}">${esc(project.branch)}</span>`,
     ].join('');
     const commit = last
-      ? `<div class="${classes('commit', withinDays(last.date, 7) && 'recent')}">
-    <span class="when">${esc(ago(last.date))}</span> · ${esc(last.author)}
+      ? `<div class="${classes('commit', recentFlag(last.date))}" data-recent-at="${esc(last.date || '')}">
+    <span class="when">${agoTag(last.date)}</span> · ${esc(last.author)}
     <span class="subject">${esc(last.subject)}</span>
   </div>`
       : '<div class="reason">no commits</div>';
@@ -1245,9 +1336,9 @@ async function publish(path, text) {
 const CONTENT_META = /<meta name="fm-dashboard-content" content="([^"]*)"/;
 let lastStamp = null;
 
-// One pass: read everything, publish the page only if the board changed, and
-// under --watch publish the stamp every time, because the stamp is what proves
-// to the open page that this command is still reading.
+// One pass: read everything, publish the page on the rule this module's header
+// owns, and under --watch publish the stamp every time, because the stamp is
+// what proves to the open page that this command is still reading.
 async function cycle() {
   const started = Date.now();
   const registry = await readRegistry(await readNumbering());
@@ -1280,17 +1371,26 @@ async function cycle() {
     now.getTime() + opts.interval * 1000 + Math.max((Date.now() - started) * 2, 5000),
   ).toISOString();
   const render = (stamps) => page({ projects, live, ...stamps });
-  const contentHash = createHash('sha1')
-    .update(render({
+  // The hash is what the board SAYS, with every per-run stamp neutralized and
+  // the clock's own share of the page left out with them, so only the fleet
+  // moving can rewrite the page.
+  hashingClock = true;
+  let forHash;
+  try {
+    forHash = render({
       generatedAt: '-', observedAt: '-', renderedAt: '-', contentHash: '-', dueBy: '-',
-    }))
-    .digest('hex')
-    .slice(0, 16);
+    });
+  } finally {
+    hashingClock = false;
+  }
+  const contentHash = createHash('sha1').update(forHash).digest('hex').slice(0, 16);
 
   await mkdir(dirname(out), { recursive: true, mode: 0o700 });
   const existing = await readFile(out, 'utf8').catch(() => null);
   const changed = CONTENT_META.exec(existing || '')?.[1] !== contentHash;
-  if (changed) {
+  // A plain run always rewrites; a watch cycle only when the board changed.
+  // This module's header owns that asymmetry and why it is one.
+  if (changed || !opts.watch) {
     await publish(out, render({
       generatedAt: localStamp(now),
       observedAt: live.observedAt || readAt,

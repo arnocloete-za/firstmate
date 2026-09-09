@@ -64,8 +64,11 @@ Never start a watch for him from firstmate's own session: it would die with the
 turn, and a watch nobody can see or stop is worse than no watch.
 One watch per page is enough; a second one adds reads and changes nothing.
 
-The page reloads itself only when the board actually changed, and it keeps his
-scroll position when it does, so it can be left open.
+The page reloads itself only when the board actually changed, and it keeps
+where he was reading when it does - how far down the board, and the project
+overlay he had open - so it can be left open.
+The clock alone is never a change: a commit's age is recomputed in his tab, not
+by rewriting the page under him.
 If the watch stops, the page says so and then ages exactly as an unwatched page
 does: the live section keeps counting up and past ten minutes says plainly not
 to trust it.
@@ -125,6 +128,9 @@ It replaced the hover reveal the cards used to carry rather than joining it,
 because two ways to read the same five commits is the lostness the one-page rule
 exists to prevent.
 
+An open overlay survives a refresh, so a watch running behind it cannot take
+the panel away mid-sentence.
+
 That overlay reaches nothing.
 Every word in it is baked into the page when the command runs, read from the
 local checkout exactly like the cards, so a release note this clone does not
@@ -176,6 +182,10 @@ own age, keeps recomputing it while the tab stays open, and past ten minutes say
 plainly not to walk into a terminal on the strength of it.
 If he wants current state, the answer is to re-run `/dashboard`, or to leave a
 watch running (above) so the re-running happens for him.
+
+Those two are deliberately not the same: a command he ran himself always
+rewrites the page, and a watch cycle rewrites it only when the board changed.
+The generator's header owns that asymmetry and the reason for it.
 
 ## Which projects are on this board
 

@@ -60,7 +60,7 @@ procevent_teardown() {
   fm_test_cleanup
 }
 trap procevent_teardown EXIT
-new_home() { mkdir -p "$1/state"; }
+new_home() { (umask 077; mkdir -p "$1/state"); }  # private, as a real state root is
 wake_payloads() { awk -F '\t' '{print $5}' "$1/state/.wake-queue" 2>/dev/null; }
 
 first_result() {  # <home> <source-id>: print the first captured result, if any

@@ -21,6 +21,9 @@ set -u
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 DASH="$ROOT/bin/fm-dashboard.mjs"
+# Runs a generated page's own script under a minimal DOM shim, so page behavior
+# is asserted by driving the shipped page rather than by reading its source.
+PAGE_HARNESS="$ROOT/tests/assets/dashboard-page-harness.mjs"
 command -v node >/dev/null 2>&1 || { echo "skip: node not found"; exit 0; }
 command -v jq >/dev/null 2>&1 || { echo "skip: jq not found"; exit 0; }
 
@@ -50,12 +53,35 @@ card_in() {  # <page> <n>
 # detail_in <page> <name>: print the detail overlay belonging to that project.
 detail_in() {  # <page> <name>
   awk -v name="$2" '
-    $0 ~ ("^<dialog class=\"detail\" id=\"[^\"]*\" aria-label=\"" name "\">") { inside = 1 }
+    $0 ~ ("^<dialog class=\"detail\" .*aria-label=\"" name "\">$") { inside = 1 }
     inside { print }
     inside && /^<\/dialog>$/ { exit }
   ' "$1"
 }
 detail() { detail_in "$PAGE" "$1"; }  # <name>
+
+file_id() {  # <path>: inode, which a publish-by-rename always changes
+  stat -c %i "$1" 2>/dev/null || stat -f %i "$1"
+}
+
+# content_id_in <page>: the board's own content id - what the page SAYS, with
+# every per-run stamp and the clock's whole share of it left out.
+content_id_in() {  # <path>
+  sed -n 's/.*name="fm-dashboard-content" content="\([^"]*\)".*/\1/p' "$1"
+}
+
+# rendered_ages <page>: the ages this command baked into the markup, one per
+# line. Read from the spans themselves, because the page also SHIPS the age
+# wording in the script it recomputes with - a bare grep for 'just now' matches
+# that copy and proves nothing about what was rendered.
+rendered_ages() {  # <path>
+  grep -o 'class="ago" data-at="[^"]*">[^<]*<' "$1" | sed 's/.*>\(.*\)<$/\1/'
+}
+
+# generated_stamp <page>: the local minute in the page's own header.
+generated_stamp() {  # <path>
+  sed -n 's/.*>generated \([0-9][0-9-]* [0-9][0-9:]*\).*/\1/p' "$1" | head -n 1
+}
 
 # row_in <page> <task-id>: print the live row carrying that task id.
 row_in() {  # <page> <id>
@@ -191,12 +217,21 @@ card 4 | grep -q '^<div class="card unavailable"' \
   || fail "an unavailable project should not become a clickable card: $(card 4)"
 detail delta | grep -q 'dialog' \
   && fail "an unavailable project should not get an overlay"
-grep -q 'dialog.showModal()' "$PAGE" \
-  || fail "the overlay must open as a modal dialog, which is what makes Escape close it"
-grep -q 'if (event.target === dialog) dialog.close()' "$PAGE" \
-  || fail "clicking outside the overlay must close it"
-grep -q 'button.detail-close' "$PAGE" \
-  || fail "the overlay must carry a close control of its own"
+# What clicking DOES, driven rather than read: the page's own script runs under
+# tests/assets/dashboard-page-harness.mjs and every assertion below is on the
+# state the page ended up in. Opening as a MODAL dialog is the whole of the
+# Escape, focus-trap and focus-return behavior, none of which is ours to
+# reimplement, so it is the modal open that is asserted.
+OVERLAYS=$(node "$PAGE_HARNESS" "$PAGE" overlays) \
+  || fail "the page's own script did not run: $OVERLAYS"
+printf '%s' "$OVERLAYS" | jq -e '.openOnLoad == null' > /dev/null \
+  || fail "a board opens with no overlay in the way: $OVERLAYS"
+printf '%s' "$OVERLAYS" | jq -e '[.cards[] | select(.opened == .card and .modal)] | length == 3' \
+  > /dev/null || fail "clicking a card must open that project's own overlay, as a modal: $OVERLAYS"
+printf '%s' "$OVERLAYS" | jq -e 'all(.cards[]; .afterBackdrop == null)' > /dev/null \
+  || fail "clicking outside the overlay must close it: $OVERLAYS"
+printf '%s' "$OVERLAYS" | jq -e 'all(.cards[]; .hasCloseControl and .afterCloseControl == null)' \
+  > /dev/null || fail "the overlay must carry a close control of its own that closes it: $OVERLAYS"
 pass "a project card is a keyboard-reachable button that opens its own modal overlay, dismissable by Escape, backdrop, or its close control"
 
 # --- the overlay carries the card's information plus the five commits -----
@@ -301,6 +336,118 @@ for forbidden in 'api.github.com' 'bitbucket.org/api' 'fetch(' 'XMLHttpRequest';
     && fail "the overlay must reach nothing - found '$forbidden' in the page"
 done
 pass "the version and release note are baked into the page, with no request back to any forge"
+
+# A release note is a file on disk with no size limit on it, and this command
+# reads every project's note at once on every watch cycle. Only as much as the
+# overlay can show is ever read, and the captain is told plainly that there is
+# more.
+HUGE="$TMP_ROOT/huge-note"
+make_repo "$HUGE" main
+{
+  printf '# Changelog\n\n## v9.0.0\n\nthe part the captain sees\n\n'
+  # A megabyte of filler, then a line that only a whole-file read could reach.
+  yes 'padding padding padding padding padding padding padding padding' | head -n 20000
+  printf 'THE-VERY-LAST-LINE\n'
+} > "$HUGE/CHANGELOG.md"
+git -C "$HUGE" add CHANGELOG.md
+git -C "$HUGE" commit -q -m "a changelog nobody trimmed"
+cat > "$FM_HOME/data/projects.md" <<REG
+# Projects
+
+- huge [no-mistakes] - clone kept in place at $HUGE (added 2026-01-01)
+REG
+generate --fleet-json "$EMPTY_FLEET"
+huge_detail=$(detail huge)
+printf '%s' "$huge_detail" | grep -q 'the part the captain sees' \
+  || fail "the start of an oversized note should still be shown: $(printf '%s' "$huge_detail" | head -c 400)"
+printf '%s' "$huge_detail" | grep -q 'Shortened here' \
+  || fail "an oversized note must say it was cut, not end mid-sentence in silence"
+grep -q 'THE-VERY-LAST-LINE' "$PAGE" \
+  && fail "the end of a megabyte note reached the page, so the whole file was carried through it"
+# The page the captain opens stays a page, whatever a project keeps in its repo.
+[ "$(wc -c < "$PAGE")" -lt 200000 ] \
+  || fail "one oversized note inflated the whole board: $(wc -c < "$PAGE") bytes"
+pass "an oversized release note is read and shown only as far as the overlay can carry it, and says so"
+
+# --- the clock, the hash, and what each run of the command owes ------------
+# A commit's displayed age rolls over by itself, and this board is meant to be
+# left open under a watch. If the clock could rewrite the page, the tab would
+# reload - and drop the overlay the captain was reading - on a fleet that never
+# moved. So the page keeps its own ages honest in the tab, and the clock is left
+# out of what decides the board changed.
+#
+# The other half of that asymmetry is asserted here too, because it is the same
+# decision seen from the captain's side: when HE runs the command, re-running it
+# is the refresh the page tells him it is, so it always hands back a page
+# stamped now - never yesterday's page because nothing in the fleet happened to
+# move since. (A running watch leaving an unchanged board alone is asserted
+# against a real watch in the watch section below.)
+iso_at() {  # <epoch seconds>
+  date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -r "$1" +%Y-%m-%dT%H:%M:%SZ
+}
+CREPO="$TMP_ROOT/clock-repo"
+# Every commit at one instant, so the whole card's ages roll over together and
+# this case is never reading a mixture of two clocks. Dating them at NOW leaves
+# the first generation the full half minute before 'just now' lapses, so a
+# loaded machine costs wall clock here rather than a red suite.
+COMMIT_AT=$(date +%s)
+COMMIT_ISO=$(iso_at "$COMMIT_AT")
+export GIT_AUTHOR_DATE="$COMMIT_ISO" GIT_COMMITTER_DATE="$COMMIT_ISO"
+make_repo "$CREPO" main
+unset GIT_AUTHOR_DATE GIT_COMMITTER_DATE
+cat > "$FM_HOME/data/projects.md" <<REG
+# Projects
+
+- clocked [no-mistakes] - clone kept in place at $CREPO (added 2026-01-01)
+REG
+CLOCK_PAGE="$TMP_ROOT/clock.html"
+"$DASH" --out "$CLOCK_PAGE" --fleet-json "$EMPTY_FLEET" > /dev/null \
+  || fail "the board with a freshly committed project should generate"
+# Without this the case could pass while proving nothing, so it fails loudly
+# instead: the first page has to be written on the near side of the rollover.
+FIRST_AGES=$(rendered_ages "$CLOCK_PAGE")
+[ -n "$FIRST_AGES" ] || fail "the page baked no ages into its markup at all, so this case reads nothing"
+printf '%s\n' "$FIRST_AGES" | grep -vqx 'just now' \
+  && fail "the first page was written after the age had already rolled over, so this case proves nothing: $FIRST_AGES"
+CLOCK_ID=$(file_id "$CLOCK_PAGE")
+CLOCK_CONTENT=$(content_id_in "$CLOCK_PAGE")
+[ -n "$CLOCK_CONTENT" ] || fail "the page must carry the content id the watch and this case both read"
+while [ "$(date +%s)" -lt $((COMMIT_AT + 36)) ]; do sleep 1; done
+MINUTE_BEFORE=$(date +'%Y-%m-%d %H:%M')
+"$DASH" --out "$CLOCK_PAGE" --fleet-json "$EMPTY_FLEET" > /dev/null \
+  || fail "the second generation should succeed"
+MINUTE_AFTER=$(date +'%Y-%m-%d %H:%M')
+# What the board SAYS did not move an inch. That is the clock kept out of the
+# hash, and it is the whole reason a watch leaves an open page alone.
+[ "$(content_id_in "$CLOCK_PAGE")" = "$CLOCK_CONTENT" ] \
+  || fail "the clock alone changed what decides the board changed, which under a watch reloads the captain's tab"
+# And yet the run the captain asked for refreshed the board under him.
+[ "$(file_id "$CLOCK_PAGE")" != "$CLOCK_ID" ] \
+  || fail "re-running the command left the old file in place, so the captain gets the earlier board back"
+SECOND_AGES=$(rendered_ages "$CLOCK_PAGE")
+printf '%s\n' "$SECOND_AGES" | grep -qx 'just now' \
+  && fail "the re-run handed back the earlier page's ages, so its clock is as old as the last run: $SECOND_AGES"
+SECOND_STAMP=$(generated_stamp "$CLOCK_PAGE")
+case "$SECOND_STAMP" in
+  "$MINUTE_BEFORE" | "$MINUTE_AFTER") ;;
+  *) fail "a re-run must be stamped with the minute it ran in, not the last run's: $SECOND_STAMP" ;;
+esac
+# The page is not merely frozen either: loaded at a later instant it repaints
+# that same commit's age, and drops the recent highlight, out of the absolute
+# instant it carries.
+EARLY=$(node "$PAGE_HARNESS" "$CLOCK_PAGE" clock "$(iso_at $((COMMIT_AT + 10)))") \
+  || fail "the page's own script did not run: $EARLY"
+LATER=$(node "$PAGE_HARNESS" "$CLOCK_PAGE" clock "$(iso_at $((COMMIT_AT + 9 * 86400)))") \
+  || fail "the page's own script did not run: $LATER"
+printf '%s' "$EARLY" | jq -e '.ages | length > 0 and all(.[]; . == "just now")' > /dev/null \
+  || fail "the page should paint a fresh commit as just now: $EARLY"
+printf '%s' "$LATER" | jq -e 'all(.ages[]; . == "9d ago")' > /dev/null \
+  || fail "the page should repaint the same commit's age from the tab's own clock: $LATER"
+printf '%s' "$EARLY" | jq -e 'all(.recent[]; .recent)' > /dev/null \
+  || fail "a commit from minutes ago should read as recent: $EARLY"
+printf '%s' "$LATER" | jq -e '.recent | length > 0 and all(.[]; .recent | not)' > /dev/null \
+  || fail "the recent highlight should lapse in the tab rather than by rewriting the page: $LATER"
+pass "the clock alone never changes what the board says, and re-running the command always hands back a page stamped now"
 
 # Restore the registry the later sections read.
 cat > "$FM_HOME/data/projects.md" <<REG
@@ -744,12 +891,7 @@ wait_until() {  # <seconds> <command...>
 stamp_field() {  # <name>
   sed -n 's/.*"'"$1"'":"\([^"]*\)".*/\1/p' "$STAMP"
 }
-page_content_id() {
-  sed -n 's/.*name="fm-dashboard-content" content="\([^"]*\)".*/\1/p' "$PAGE"
-}
-file_id() {  # <path>: inode, which a publish-by-rename always changes
-  stat -c %i "$1" 2>/dev/null || stat -f %i "$1"
-}
+page_content_id() { content_id_in "$PAGE"; }
 read_advanced() { [ -f "$STAMP" ] && [ "$(stamp_field readAt)" != "$1" ]; }
 
 rm -f "$PAGE" "$STAMP"
@@ -784,7 +926,10 @@ grep -q 'dueBy' "$PAGE" || fail "the page must start with that expiry too, not w
 pass "the watch publishes an expiry on its own liveness rather than an open-ended claim"
 
 # An unchanged fleet: the sidecar keeps proving the watch is reading, and the
-# page the captain is looking at is left exactly where it is.
+# page the captain is looking at is left exactly where it is. This is the half
+# of the asymmetry a plain run does NOT get - nobody asked for this pass, so a
+# board that has not moved must not cost him his scroll position or the overlay
+# he has open.
 PAGE_ID=$(file_id "$PAGE")
 FIRST_READ=$(stamp_field readAt)
 wait_until $((WATCH_INTERVAL * 4)) read_advanced "$FIRST_READ" \
@@ -794,6 +939,9 @@ wait_until $((WATCH_INTERVAL * 4)) read_advanced "$FIRST_READ" \
 pass "an unchanged fleet keeps proving the watch is alive without rewriting the page"
 
 # A real change: the page is republished and the sidecar points at the new one.
+# The page as it stands now is kept, because it is the one the captain would
+# have open when that change lands.
+cp "$PAGE" "$TMP_ROOT/before-change.html"
 printf 'more\n' >> "$WREPOS/echo/file.txt"
 git -C "$WREPOS/echo" add file.txt
 git -C "$WREPOS/echo" commit -q -m "the newest thing"
@@ -806,6 +954,31 @@ wait_until 10 test "$(stamp_field content)" = "$(page_content_id)" \
 grep -q '^updated: ' "$TMP_ROOT/watch.log" \
   || fail "the captain should see that something changed: $(cat "$TMP_ROOT/watch.log")"
 pass "a real change republishes the page and the sidecar names it"
+
+# The board is meant to be left open, so a refresh that threw away the overlay
+# the captain was reading would make the watch worse than no watch. Both halves
+# are driven: the open page is told the board changed, and the page that
+# replaces it is loaded with exactly what the first one handed across.
+SAVED=$(node "$PAGE_HARNESS" "$TMP_ROOT/before-change.html" save echo) \
+  || fail "the page's own script did not run: $SAVED"
+printf '%s' "$SAVED" | jq -e '.openedBefore == "echo" and .reloaded == 1' > /dev/null \
+  || fail "a changed board should reload the page that had an overlay open: $SAVED"
+HANDOVER=$(printf '%s' "$SAVED" | jq -r '.name')
+RESTORED=$(node "$PAGE_HARNESS" "$PAGE" restore "$HANDOVER") \
+  || fail "the republished page's own script did not run: $RESTORED"
+printf '%s' "$RESTORED" | jq -e '.openOnLoad == "echo" and (.scrolls | length) == 1' > /dev/null \
+  || fail "the overlay the captain had open must survive the refresh: $RESTORED"
+# Nothing reopens on its own: the overlay comes back because the page before it
+# said so, and a project that has since left the board reopens nothing at all.
+PLAIN=$(node "$PAGE_HARNESS" "$PAGE" restore '') \
+  || fail "the page's own script did not run: $PLAIN"
+printf '%s' "$PLAIN" | jq -e '.openOnLoad == null' > /dev/null \
+  || fail "a plain load must open no overlay: $PLAIN"
+GONE=$(node "$PAGE_HARNESS" "$PAGE" restore 'fm-dashboard-view:{"y":9,"open":"gone"}') \
+  || fail "the page's own script did not run: $GONE"
+printf '%s' "$GONE" | jq -e '.openOnLoad == null and .scrolls == [9]' > /dev/null \
+  || fail "a project that has left the board must reopen nothing, and still restore the scroll: $GONE"
+pass "an overlay the captain had open survives the watch's refresh, and nothing reopens by itself"
 
 # The watch page is still display only.
 for forbidden in '<form' 'method="post"' 'fetch(' 'XMLHttpRequest' 'http://127.0.0.1' 'http://localhost'; do
