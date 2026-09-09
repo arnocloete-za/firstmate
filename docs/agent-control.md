@@ -70,6 +70,8 @@ It is not deterministic across the verified adapters: codex and grok resume only
    A secondmate relaunch does not require one and never rewrites its standing charter.
 4. **Stop the old agent** through the `exit` verb, with its postcondition.
 5. **Launch the replacement** through its single owner, `bin/fm-spawn.sh --relaunch`, which adopts the recorded endpoint and worktree instead of creating either, clears the previous harness's per-task wiring, and arms a fresh busy generation.
+   A `workspace=project` task's batch branch is adopted from that same record rather than passed as a flag, so `--branch` is refused alongside `--relaunch`, and the replacement's instructions and the project directory are both re-proven against the recorded branch.
+   That wiring clear applies the same ownership proof cleanup uses when the worktree is the captain's own directory, so a file at one of those paths that cannot be proven to be this task's own is reported and left exactly where it is.
 
 Switching harness is therefore one ordinary relaunch rather than a separate mechanism.
 
@@ -99,6 +101,7 @@ Switching harness is therefore one ordinary relaunch rather than a separate mech
 - An ambiguous or unreadable endpoint state refuses.
   Only a positively classified state acts.
 - `fm-spawn --relaunch` independently refuses unless the recorded endpoint is positively agent-free and its shell is sitting in the recorded worktree, so a replacement can never join a live agent or start outside the copy holding the work.
+- For a `workspace=project` task it additionally refuses unless the brief's recorded branch and the project directory's current branch both match the branch the task itself records, since the captain works in that directory too.
 
 ## Capability matrix
 
@@ -118,5 +121,5 @@ The empirical basis for each adapter's value is the `harness-adapters` skill's v
 ## Verification
 
 - `tests/fm-control.test.sh` - the adapter contract for every verified harness, the backend capability matrix, exact-id scoping, the closed verb list, the busy, idle, dead, and idempotent lifecycle cases, and marker non-regression, all against a stubbed session provider.
-- `tests/fm-control-relaunch.test.sh` - the relaunch transaction: identity preservation, harness switching, the progress note, checkpoint refusals, and rollback after a failed launch.
+- `tests/fm-control-relaunch.test.sh` - the relaunch transaction: identity preservation, harness switching, the progress note, checkpoint refusals, rollback after a failed launch, and the `workspace=project` path through both entry points with every branch and wiring-ownership guard still biting.
 - `tests/fm-control-herdr-smoke.test.sh` - the second state-verified backend against the real herdr binary, on an isolated throwaway lab session.

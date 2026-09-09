@@ -17,6 +17,9 @@
 #   6. fm-spawn --relaunch refuses on its own: a live agent, a contradicting
 #      flag, an extra positional, or a backend that cannot prove the previous
 #      agent exited.
+#   7. A mode=project-branch task can be relaunched at all, through BOTH entry
+#      points, while every guard that replaces its lost isolation still bites
+#      against the branch the task itself records.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -165,6 +168,50 @@ EOF
   } > "$home/state/$id.meta"
   printf '%s\n' "fm-$id" > "$dir/fake/windows"
   printf '%s' "$wt" > "$dir/fake/cwd"
+  TASK_TMPS+=("/tmp/fm-$id")
+}
+
+# add_project_branch_task <case-dir> <id> <batch-branch> [harness]
+#
+# The other workspace model: no disposable copy at all. The worker's recorded
+# worktree IS the project's own directory, sitting on a batch branch the captain
+# owns, and the brief records that branch alongside the mode. A relaunch has to
+# adopt both from the record, because --branch is refused alongside --relaunch.
+add_project_branch_task() {
+  local dir=$1 id=$2 branch=$3 harness=${4:-claude}
+  local home="$dir/home" proj="$dir/proj"
+  fm_git_init_commit "$proj"
+  fm_git_add_origin "$proj" "$proj.origin.git"
+  git -C "$proj" checkout --quiet -b "$branch"
+  mkdir -p "$home/data/$id"
+  cat > "$home/data/$id/brief.md" <<EOF
+# Task
+## Captain's intent
+Exercise project-branch relaunch behavior for $id.
+
+## Firstmate spec
+Replace the agent without moving the work off the captain's batch branch.
+
+# Definition of done
+Delivery contract: mode=project-branch branch=$branch
+EOF
+  {
+    echo "window=fmses:fm-$id"
+    echo "endpoint_task_id=$id"
+    echo "worktree=$proj"
+    echo "project=$proj"
+    echo "harness=$harness"
+    echo "kind=ship"
+    echo "mode=project-branch"
+    echo "yolo=off"
+    echo "workspace=project"
+    echo "branch=$branch"
+    echo "tasktmp=/tmp/fm-$id"
+    echo "model=default"
+    echo "effort=default"
+  } > "$home/state/$id.meta"
+  printf '%s\n' "fm-$id" > "$dir/fake/windows"
+  printf '%s' "$proj" > "$dir/fake/cwd"
   TASK_TMPS+=("/tmp/fm-$id")
 }
 
@@ -1421,6 +1468,9 @@ test_spawn_relaunch_refuses_contradicting_flags() {
   out=$(run_spawn "$dir" rl16 --relaunch --scout); rc=$?
   expect_code 1 "$rc" "--scout should be refused alongside --relaunch"
   assert_contains "$out" "recorded kind" "the refusal should name the recorded kind rule"
+  out=$(run_spawn "$dir" rl16 --relaunch --branch batch/autumn); rc=$?
+  expect_code 1 "$rc" "--branch should be refused alongside --relaunch"
+  assert_contains "$out" "recorded batch branch" "the refusal should name the recorded batch-branch rule"
   out=$(run_spawn "$dir" rl16 "$dir/proj" --relaunch); rc=$?
   expect_code 1 "$rc" "a project positional should be refused alongside --relaunch"
   assert_contains "$out" "takes the task id only" "the refusal should name the positional rule"
@@ -1484,6 +1534,159 @@ test_relaunch_moves_a_drifted_item_back_in_flight() {
   pass "relaunch heals an item that drifted out of In flight while the task stayed live"
 }
 
+# --- 7. project-branch relaunch ---------------------------------------------
+#
+# --branch is refused alongside --relaunch on purpose: the batch branch is task
+# identity, adopted from the record like the backend and the endpoint. That made
+# the brief-agreement guard's original comparison against the raw --branch flag
+# unsatisfiable, so no project-branch task could be relaunched through either
+# entry point. These cases pin the relaunch working AND every guard that replaces
+# this mode's lost isolation still biting, so the fix cannot regress into simply
+# dropping the guard.
+
+test_project_branch_relaunch_adopts_the_recorded_batch_branch() {
+  local dir out rc
+  dir=$(new_case pb-control rl29)
+  add_project_branch_task "$dir" rl29 batch/autumn claude
+  out=$(run_control "$dir" rl29 relaunch --note "died mid-run on the dashboard work"); rc=$?
+  expect_code 0 "$rc" "a project-branch task must be relaunchable"$'\n'"$out"
+  assert_contains "$out" "relaunched rl29 harness=claude from=claude" "the outcome should name the transition"
+  [ "$(meta_field "$dir" rl29 workspace)" = project ] \
+    || fail "the workspace model must survive the relaunch"
+  [ "$(meta_field "$dir" rl29 branch)" = batch/autumn ] \
+    || fail "the batch branch must survive the relaunch"
+  [ "$(meta_field "$dir" rl29 worktree)" = "$dir/proj" ] \
+    || fail "the project's own directory must be reused, not reallocated"
+  [ "$(git -C "$dir/proj" symbolic-ref --short HEAD)" = batch/autumn ] \
+    || fail "the relaunch moved the captain's directory off its batch branch"
+  assert_grep "encode launch-brief" "$dir/fake/literal" "the replacement should have been launched"
+  pass "fm-control relaunch: a project-branch task relaunches onto the batch branch it records"
+}
+
+test_spawn_relaunch_of_a_project_branch_task_needs_no_branch_flag() {
+  local dir out rc
+  dir=$(new_case pb-spawn rl30)
+  add_project_branch_task "$dir" rl30 batch/autumn claude
+  printf 'zsh' > "$dir/fake/command"
+  out=$(run_spawn "$dir" rl30 --relaunch); rc=$?
+  expect_code 0 "$rc" "the direct spawn entry point must relaunch a project-branch task"$'\n'"$out"
+  assert_contains "$out" "workspace=project branch=batch/autumn" \
+    "the spawn should report the batch branch it adopted from the record"
+  [ "$(meta_field "$dir" rl30 branch)" = batch/autumn ] \
+    || fail "the batch branch must survive the direct relaunch"
+  pass "fm-spawn --relaunch: a project-branch task relaunches with no --branch flag to pass"
+}
+
+test_project_branch_relaunch_still_refuses_a_brief_naming_another_branch() {
+  local dir out rc before
+  dir=$(new_case pb-drift rl31)
+  add_project_branch_task "$dir" rl31 batch/autumn claude
+  # Real drift: the instructions the replacement would read name a branch the
+  # task is not on. The record, not a flag, is what the brief is measured against.
+  sed -i.bak 's|^Delivery contract: mode=project-branch branch=.*$|Delivery contract: mode=project-branch branch=batch/spring|' \
+    "$dir/home/data/rl31/brief.md"
+  rm -f "$dir/home/data/rl31/brief.md.bak"
+  printf 'zsh' > "$dir/fake/command"
+  before=$(cat "$dir/home/state/rl31.meta")
+  out=$(run_spawn "$dir" rl31 --relaunch); rc=$?
+  expect_code 1 "$rc" "a brief naming another branch should still refuse on a relaunch"
+  assert_contains "$out" "the brief says branch=batch/spring but the task records branch=batch/autumn" \
+    "the refusal should compare the brief against the record, not against an absent flag"
+  [ "$(cat "$dir/home/state/rl31.meta")" = "$before" ] \
+    || fail "the refused relaunch changed the task record"
+  pass "fm-spawn --relaunch: brief/record branch drift is still refused, named against the record"
+}
+
+test_project_branch_relaunch_refuses_a_directory_moved_off_the_branch() {
+  local dir out rc
+  dir=$(new_case pb-moved rl32)
+  add_project_branch_task "$dir" rl32 batch/autumn claude
+  # The captain works in this directory too, so the branch it is actually on is
+  # re-proven after the endpoint is adopted. That guard reads the same resolved
+  # batch branch, so it must name the recorded one rather than pass vacuously
+  # against an empty value.
+  git -C "$dir/proj" checkout --quiet -b batch/winter
+  printf 'zsh' > "$dir/fake/command"
+  out=$(run_spawn "$dir" rl32 --relaunch); rc=$?
+  expect_code 1 "$rc" "a directory moved off the batch branch should refuse the relaunch"
+  assert_contains "$out" "not this task's branch 'batch/autumn'" \
+    "the refusal should name the recorded batch branch"
+  [ "$(git -C "$dir/proj" symbolic-ref --short HEAD)" = batch/winter ] \
+    || fail "the refused relaunch switched the captain's directory back"
+  pass "fm-spawn --relaunch: a project directory moved off the batch branch refuses, naming the recorded one"
+}
+
+test_project_branch_relaunch_proves_its_own_wiring_through_a_symlinked_state_dir() {
+  local dir out rc state_real
+  dir=$(new_case pb-symlink rl42)
+  # A firstmate home reached through a symlink, so FM_HOME/state and its physical
+  # path differ. fm-spawn embeds the PHYSICAL one in the claude wiring it writes,
+  # so the dispatch guard that decides whether a file at one of those in-directory
+  # paths is the captain's has to resolve the same way. Read raw, this task's OWN
+  # wiring from its first launch reads as the captain's and every relaunch refuses.
+  mv "$dir/home" "$dir/home-real"
+  ln -s home-real "$dir/home"
+  add_project_branch_task "$dir" rl42 batch/autumn claude
+  state_real=$(cd "$dir/home-real/state" && pwd -P)
+  mkdir -p "$dir/proj/.claude"
+  printf '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"touch %s/rl42.turn-ended"}]}]}}\n' \
+    "$state_real" > "$dir/proj/.claude/settings.local.json"
+  printf 'zsh' > "$dir/fake/command"
+  out=$(run_spawn "$dir" rl42 --relaunch); rc=$?
+  expect_code 0 "$rc" "this task's own wiring must not block its relaunch through a symlinked state dir"$'\n'"$out"
+  assert_grep "$state_real/rl42.turn-ended" "$dir/proj/.claude/settings.local.json" \
+    "the replacement's wiring should have been rewritten in the project directory"
+  [ "$(meta_field "$dir" rl42 branch)" = batch/autumn ] \
+    || fail "the batch branch must survive the relaunch"
+  pass "fm-spawn --relaunch: a project-branch task's own wiring is proven its own through a symlinked state dir"
+}
+
+test_project_branch_harness_switch_leaves_the_captains_wiring_in_place() {
+  local dir out rc before
+  dir=$(new_case pb-wiring rl43)
+  add_project_branch_task "$dir" rl43 batch/autumn claude
+  # The captain has since put his OWN claude settings in the directory this task
+  # works in. Retiring the previous harness's wiring on a switch may not take a
+  # file that cannot be proven to be this task's, exactly as cleanup may not.
+  mkdir -p "$dir/proj/.claude"
+  printf '{"hooks":{}}\n' > "$dir/proj/.claude/settings.local.json"
+  before=$(cat "$dir/proj/.claude/settings.local.json")
+  printf 'codex' > "$dir/fake/becomes"
+  out=$(run_control "$dir" rl43 relaunch --harness codex --note "switching runtime"); rc=$?
+  expect_code 0 "$rc" "a harness switch on a project-branch task should succeed"$'\n'"$out"
+  [ -f "$dir/proj/.claude/settings.local.json" ] \
+    || fail "the captain's own settings file was deleted from his project directory"
+  [ "$(cat "$dir/proj/.claude/settings.local.json")" = "$before" ] \
+    || fail "the captain's own settings file was rewritten"
+  assert_contains "$out" "cannot be proven to be this task's own agent wiring" \
+    "the retained file should be reported rather than silently left"
+  [ "$(meta_field "$dir" rl43 harness)" = codex ] || fail "the record should follow the switch"
+  pass "fm-control relaunch: a harness switch in the captain's directory leaves wiring it cannot prove is ours"
+}
+
+test_project_branch_relaunch_refuses_a_record_with_no_batch_branch() {
+  local dir out rc before
+  dir=$(new_case pb-nobranch rl44)
+  add_project_branch_task "$dir" rl44 batch/autumn claude
+  # A malformed record: no batch branch at all, and a brief carrying no delivery
+  # contract line, so nothing upstream refuses first. The directory is left at a
+  # detached HEAD, which is exactly what an empty recorded branch reads as.
+  grep -v '^branch=' "$dir/home/state/rl44.meta" > "$dir/home/state/rl44.meta.tmp"
+  mv "$dir/home/state/rl44.meta.tmp" "$dir/home/state/rl44.meta"
+  grep -v '^Delivery contract:' "$dir/home/data/rl44/brief.md" > "$dir/home/data/rl44/brief.tmp"
+  mv "$dir/home/data/rl44/brief.tmp" "$dir/home/data/rl44/brief.md"
+  git -C "$dir/proj" checkout --quiet --detach
+  printf 'zsh' > "$dir/fake/command"
+  before=$(cat "$dir/home/state/rl44.meta")
+  out=$(run_spawn "$dir" rl44 --relaunch); rc=$?
+  expect_code 1 "$rc" "a record with no batch branch must refuse rather than pass against a detached HEAD"
+  assert_contains "$out" "no batch branch is recorded for this task" \
+    "the refusal should name the missing recorded branch"
+  [ "$(cat "$dir/home/state/rl44.meta")" = "$before" ] \
+    || fail "the refused relaunch changed the task record"
+  pass "fm-spawn --relaunch: an empty recorded batch branch refuses instead of matching a detached HEAD"
+}
+
 test_same_harness_relaunch_keeps_identity_and_reuses_the_endpoint
 test_relaunch_preserves_durable_task_metadata
 test_relaunch_serializes_concurrent_durable_metadata_publication
@@ -1533,5 +1736,12 @@ test_spawn_relaunch_refuses_a_pending_authoritative_close
 test_spawn_relaunch_refuses_contradicting_flags
 test_spawn_relaunch_refuses_an_unrecorded_task
 test_spawn_relaunch_refuses_a_pane_outside_the_worktree
+test_project_branch_relaunch_adopts_the_recorded_batch_branch
+test_spawn_relaunch_of_a_project_branch_task_needs_no_branch_flag
+test_project_branch_relaunch_still_refuses_a_brief_naming_another_branch
+test_project_branch_relaunch_refuses_a_directory_moved_off_the_branch
+test_project_branch_relaunch_proves_its_own_wiring_through_a_symlinked_state_dir
+test_project_branch_harness_switch_leaves_the_captains_wiring_in_place
+test_project_branch_relaunch_refuses_a_record_with_no_batch_branch
 test_relaunch_reverifies_an_already_in_flight_item_instead_of_rewriting_it
 test_relaunch_moves_a_drifted_item_back_in_flight

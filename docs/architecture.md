@@ -226,6 +226,7 @@ Work never happens on the default branch, nothing is reset to make room, and thi
 
 A batch branch belongs to a batch of work rather than to one task, so nothing derives it from a task id and several tasks may land on one branch over its life.
 Because the model owns nothing, it allocates, resets, detaches, deletes, and refreshes nothing: the base-freshness reset above is skipped, and teardown leaves the directory, the branch, and every commit on it exactly as they are, removing only wiring it can prove is its own.
+A relaunch retiring the previous harness's wiring obeys that same proof rather than its own, since what firstmate considers stale is still the captain's file if it cannot be shown to be this task's.
 Teardown's landed-work gate is therefore replaced by an uncommitted-changes gate, since commits are already durable in the captain's own repo while a dirty tree means an interrupted edit or the captain working there right now.
 A task's metadata records the model as `workspace=project` with its `branch=`; an absent `workspace=` means the isolated copy, so records predating the model keep their meaning.
 `backend=orca` is refused for it, because an Orca-allocated worktree is the very thing the model does without.
@@ -310,7 +311,8 @@ The `data/secondmates.md` line contract is owned by the [`secondmate-provisionin
 `no-mistakes` tasks run the full validation pipeline, `direct-PR` tasks open PRs without that pipeline, and `local-only` tasks stay local until firstmate performs an approved fast-forward merge.
 `project-branch` tasks run that same pipeline but end at a captain gate rather than at an open PR: the worker announces its branch, builds and bumps the version in the project's own directory, runs the pipeline with its `push,pr,ci` steps skipped, and stops at ready for a pull request, so a green pipeline can neither push nor open one.
 Only a relayed captain instruction releases a second, unskipped run that pushes and opens the PR, because he wants the reminder that work is ready and keeps that decision himself.
-It is the one mode whose delivery contract also selects a workspace model, which is why `--mode project-branch` requires `--branch` on both `bin/fm-brief.sh` and `bin/fm-spawn.sh` and the brief's recorded branch is checked against the dispatched one exactly as its mode is.
+It is the one mode whose delivery contract also selects a workspace model, which is why `--mode project-branch` requires `--branch` on `bin/fm-brief.sh` and on a fresh `bin/fm-spawn.sh` dispatch, and the brief's recorded branch is checked against the branch the worker will actually be put on exactly as its mode is.
+A relaunch is the exception on both counts, because the batch branch is task identity adopted from the record rather than a per-spawn choice ([`agent-control.md`](agent-control.md#transactional-relaunch)).
 `bin/fm-promote.sh` refuses it, because promotion keeps a scout's own scratch copy and that copy is not the project's directory.
 Each task's mode and `yolo` merge posture are firstmate's decision at intake.
 The mode is passed explicitly to `bin/fm-brief.sh`, and both values are passed explicitly to `bin/fm-spawn.sh` and `bin/fm-promote.sh`; each command refuses to guess the values it consumes.

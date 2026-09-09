@@ -286,6 +286,14 @@ fm_project_branch_resolve() {  # <dir> <requested-branch>
 # fresh one and must never assume the captain left it where the task started.
 fm_project_branch_require_on_branch() {  # <dir> <branch>
   local dir=$1 branch=$2 current
+  # An empty branch would compare equal to a detached HEAD and pass this guard
+  # vacuously, launching a worker into the captain's directory with nothing
+  # proven about where it stands. A task with no recorded branch is a malformed
+  # record, so it refuses here rather than being read as "any branch will do".
+  if [ -z "$branch" ]; then
+    echo "error: no batch branch is recorded for this task, so nothing can be proven about the branch $dir is on; inspect its task record rather than launching a worker into it" >&2
+    return 1
+  fi
   if ! fm_project_branch_dir_is_clone_root "$dir"; then
     echo "error: $dir is no longer the root of its own git clone" >&2
     return 1
