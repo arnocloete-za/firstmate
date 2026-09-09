@@ -1317,7 +1317,10 @@ families_for_changed_path() {
     docs/configuration.md|docs/supervision-protocols/*)
       printf '%s\n' pure-contract-unit
       ;;
-    tests/lib.sh|tests/*-helpers.sh|tests/fixtures.sh)
+    tests/lib.sh|tests/*-helpers.sh|tests/fixtures.sh|tests/assets/*)
+      # A shared helper or a shared test asset belongs to whichever suites name
+      # it, found by the same reference scan. An asset is a driver a suite runs,
+      # not a suite of its own, so a change to one selects its consumers.
       families_for_test_reference "$(basename "$path")" \
         || printf '%s\n' "__unmapped__:$path"
       ;;
