@@ -64,6 +64,25 @@ file_id() {  # <path>: inode, which a publish-by-rename always changes
   stat -c %i "$1" 2>/dev/null || stat -f %i "$1"
 }
 
+# content_id_in <page>: the board's own content id - what the page SAYS, with
+# every per-run stamp and the clock's whole share of it left out.
+content_id_in() {  # <path>
+  sed -n 's/.*name="fm-dashboard-content" content="\([^"]*\)".*/\1/p' "$1"
+}
+
+# rendered_ages <page>: the ages this command baked into the markup, one per
+# line. Read from the spans themselves, because the page also SHIPS the age
+# wording in the script it recomputes with - a bare grep for 'just now' matches
+# that copy and proves nothing about what was rendered.
+rendered_ages() {  # <path>
+  grep -o 'class="ago" data-at="[^"]*">[^<]*<' "$1" | sed 's/.*>\(.*\)<$/\1/'
+}
+
+# generated_stamp <page>: the local minute in the page's own header.
+generated_stamp() {  # <path>
+  sed -n 's/.*>generated \([0-9][0-9-]* [0-9][0-9:]*\).*/\1/p' "$1" | head -n 1
+}
+
 # row_in <page> <task-id>: print the live row carrying that task id.
 row_in() {  # <page> <id>
   awk -v id="$2" '
@@ -350,21 +369,32 @@ grep -q 'THE-VERY-LAST-LINE' "$PAGE" \
   || fail "one oversized note inflated the whole board: $(wc -c < "$PAGE") bytes"
 pass "an oversized release note is read and shown only as far as the overlay can carry it, and says so"
 
-# --- the clock alone must never rewrite the page --------------------------
+# --- the clock, the hash, and what each run of the command owes ------------
 # A commit's displayed age rolls over by itself, and this board is meant to be
 # left open under a watch. If the clock could rewrite the page, the tab would
 # reload - and drop the overlay the captain was reading - on a fleet that never
 # moved. So the page keeps its own ages honest in the tab, and the clock is left
 # out of what decides the board changed.
+#
+# The other half of that asymmetry is asserted here too, because it is the same
+# decision seen from the captain's side: when HE runs the command, re-running it
+# is the refresh the page tells him it is, so it always hands back a page
+# stamped now - never yesterday's page because nothing in the fleet happened to
+# move since. (A running watch leaving an unchanged board alone is asserted
+# against a real watch in the watch section below.)
 iso_at() {  # <epoch seconds>
   date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -r "$1" +%Y-%m-%dT%H:%M:%SZ
 }
 CREPO="$TMP_ROOT/clock-repo"
-make_repo "$CREPO" main
-COMMIT_AT=$(( $(date +%s) - 24 ))
+# Every commit at one instant, so the whole card's ages roll over together and
+# this case is never reading a mixture of two clocks. Dating them at NOW leaves
+# the first generation the full half minute before 'just now' lapses, so a
+# loaded machine costs wall clock here rather than a red suite.
+COMMIT_AT=$(date +%s)
 COMMIT_ISO=$(iso_at "$COMMIT_AT")
-GIT_AUTHOR_DATE="$COMMIT_ISO" GIT_COMMITTER_DATE="$COMMIT_ISO" \
-  git -C "$CREPO" commit -q --amend --no-edit --date="$COMMIT_ISO"
+export GIT_AUTHOR_DATE="$COMMIT_ISO" GIT_COMMITTER_DATE="$COMMIT_ISO"
+make_repo "$CREPO" main
+unset GIT_AUTHOR_DATE GIT_COMMITTER_DATE
 cat > "$FM_HOME/data/projects.md" <<REG
 # Projects
 
@@ -375,17 +405,36 @@ CLOCK_PAGE="$TMP_ROOT/clock.html"
   || fail "the board with a freshly committed project should generate"
 # Without this the case could pass while proving nothing, so it fails loudly
 # instead: the first page has to be written on the near side of the rollover.
-grep -q 'just now' "$CLOCK_PAGE" \
-  || fail "the first page was written after the age had already rolled over, so this case proves nothing"
+FIRST_AGES=$(rendered_ages "$CLOCK_PAGE")
+[ -n "$FIRST_AGES" ] || fail "the page baked no ages into its markup at all, so this case reads nothing"
+printf '%s\n' "$FIRST_AGES" | grep -vqx 'just now' \
+  && fail "the first page was written after the age had already rolled over, so this case proves nothing: $FIRST_AGES"
 CLOCK_ID=$(file_id "$CLOCK_PAGE")
+CLOCK_CONTENT=$(content_id_in "$CLOCK_PAGE")
+[ -n "$CLOCK_CONTENT" ] || fail "the page must carry the content id the watch and this case both read"
 while [ "$(date +%s)" -lt $((COMMIT_AT + 36)) ]; do sleep 1; done
+MINUTE_BEFORE=$(date +'%Y-%m-%d %H:%M')
 "$DASH" --out "$CLOCK_PAGE" --fleet-json "$EMPTY_FLEET" > /dev/null \
   || fail "the second generation should succeed"
-[ "$(file_id "$CLOCK_PAGE")" = "$CLOCK_ID" ] \
-  || fail "the clock alone rewrote the page, which under a watch reloads the captain's tab"
-# And the page is not merely frozen: loaded at a later instant it repaints that
-# same commit's age, and drops the recent highlight, out of the absolute instant
-# it carries.
+MINUTE_AFTER=$(date +'%Y-%m-%d %H:%M')
+# What the board SAYS did not move an inch. That is the clock kept out of the
+# hash, and it is the whole reason a watch leaves an open page alone.
+[ "$(content_id_in "$CLOCK_PAGE")" = "$CLOCK_CONTENT" ] \
+  || fail "the clock alone changed what decides the board changed, which under a watch reloads the captain's tab"
+# And yet the run the captain asked for refreshed the board under him.
+[ "$(file_id "$CLOCK_PAGE")" != "$CLOCK_ID" ] \
+  || fail "re-running the command left the old file in place, so the captain gets the earlier board back"
+SECOND_AGES=$(rendered_ages "$CLOCK_PAGE")
+printf '%s\n' "$SECOND_AGES" | grep -qx 'just now' \
+  && fail "the re-run handed back the earlier page's ages, so its clock is as old as the last run: $SECOND_AGES"
+SECOND_STAMP=$(generated_stamp "$CLOCK_PAGE")
+case "$SECOND_STAMP" in
+  "$MINUTE_BEFORE" | "$MINUTE_AFTER") ;;
+  *) fail "a re-run must be stamped with the minute it ran in, not the last run's: $SECOND_STAMP" ;;
+esac
+# The page is not merely frozen either: loaded at a later instant it repaints
+# that same commit's age, and drops the recent highlight, out of the absolute
+# instant it carries.
 EARLY=$(node "$PAGE_HARNESS" "$CLOCK_PAGE" clock "$(iso_at $((COMMIT_AT + 10)))") \
   || fail "the page's own script did not run: $EARLY"
 LATER=$(node "$PAGE_HARNESS" "$CLOCK_PAGE" clock "$(iso_at $((COMMIT_AT + 9 * 86400)))") \
@@ -398,7 +447,7 @@ printf '%s' "$EARLY" | jq -e 'all(.recent[]; .recent)' > /dev/null \
   || fail "a commit from minutes ago should read as recent: $EARLY"
 printf '%s' "$LATER" | jq -e '.recent | length > 0 and all(.[]; .recent | not)' > /dev/null \
   || fail "the recent highlight should lapse in the tab rather than by rewriting the page: $LATER"
-pass "the clock alone never rewrites the page, and the page keeps its own ages and recency honest"
+pass "the clock alone never changes what the board says, and re-running the command always hands back a page stamped now"
 
 # Restore the registry the later sections read.
 cat > "$FM_HOME/data/projects.md" <<REG
@@ -842,9 +891,7 @@ wait_until() {  # <seconds> <command...>
 stamp_field() {  # <name>
   sed -n 's/.*"'"$1"'":"\([^"]*\)".*/\1/p' "$STAMP"
 }
-page_content_id() {
-  sed -n 's/.*name="fm-dashboard-content" content="\([^"]*\)".*/\1/p' "$PAGE"
-}
+page_content_id() { content_id_in "$PAGE"; }
 read_advanced() { [ -f "$STAMP" ] && [ "$(stamp_field readAt)" != "$1" ]; }
 
 rm -f "$PAGE" "$STAMP"
@@ -879,7 +926,10 @@ grep -q 'dueBy' "$PAGE" || fail "the page must start with that expiry too, not w
 pass "the watch publishes an expiry on its own liveness rather than an open-ended claim"
 
 # An unchanged fleet: the sidecar keeps proving the watch is reading, and the
-# page the captain is looking at is left exactly where it is.
+# page the captain is looking at is left exactly where it is. This is the half
+# of the asymmetry a plain run does NOT get - nobody asked for this pass, so a
+# board that has not moved must not cost him his scroll position or the overlay
+# he has open.
 PAGE_ID=$(file_id "$PAGE")
 FIRST_READ=$(stamp_field readAt)
 wait_until $((WATCH_INTERVAL * 4)) read_advanced "$FIRST_READ" \
