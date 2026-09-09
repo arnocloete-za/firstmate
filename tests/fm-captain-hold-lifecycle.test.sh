@@ -19,7 +19,11 @@ command -v tasks-axi >/dev/null 2>&1 || { echo "skip: tasks-axi not found"; exit
 
 make_home() {  # <name>
   local home="$TMP_ROOT/$1" fakebin
-  mkdir -p "$home/data" "$home/state" "$home/config" "$home/projects"
+  # Private, exactly as a real home is: arming the review deck as a
+  # process-event source refuses a group- or world-readable state root. Creating
+  # it under the caller's umask makes this suite pass only on a machine whose
+  # umask already happens to be 077.
+  (umask 077; mkdir -p "$home/data" "$home/state" "$home/config" "$home/projects")
   cp "$ROOT/.tasks.toml" "$home/.tasks.toml"
   cat > "$home/data/backlog.md" <<'EOF'
 ## In flight
