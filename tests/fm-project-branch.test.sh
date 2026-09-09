@@ -37,6 +37,10 @@
 # Every spawn case here stops before any endpoint exists: the dispatch guards run
 # ahead of backend creation, and a fake `tmux` that exits non-zero backstops the
 # cases meant to get past them, so no window is ever created.
+#
+# Replacing this mode's agent is a relaunch rather than a dispatch, so
+# tests/fm-control-relaunch.test.sh section 7 owns its coverage: it has the
+# lifecycle-modelling terminal these cases deliberately do without.
 set -u
 
 # shellcheck source=tests/lib.sh

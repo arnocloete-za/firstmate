@@ -64,15 +64,18 @@
 #   owns the checkpoint, the progress note, stopping the previous agent, and the
 #   transaction; call fm-control rather than this flag directly unless you are
 #   deliberately re-launching an already-stopped task. Every identity axis -
-#   backend, kind, project or home, worktree, endpoint - comes from the task's
-#   validated state/<id>.meta, so --backend, --scout, --secondmate, a project
-#   positional, and batch pairs are all refused alongside it; only harness,
-#   model, and effort may change, which is what makes a harness switch one
-#   ordinary relaunch. It refuses unless the recorded endpoint is positively
-#   agent-free on a backend with a recovery-grade agent-state classifier (tmux
-#   or herdr), refuses unless the endpoint's shell is sitting in the recorded
-#   worktree, and clears the previous harness's per-task wiring before arming
-#   the new incarnation.
+#   backend, kind, project or home, worktree, endpoint, workspace model, batch
+#   branch - comes from the task's validated state/<id>.meta, so --backend,
+#   --scout, --secondmate, a project positional, and batch pairs are all refused
+#   alongside it; only harness, model, and effort may change, which is what
+#   makes a harness switch one ordinary relaunch. It refuses unless the recorded
+#   endpoint is positively agent-free on a backend with a recovery-grade
+#   agent-state classifier (tmux or herdr), refuses unless the endpoint's shell
+#   is sitting in the recorded worktree, and clears the previous harness's
+#   per-task wiring before arming the new incarnation. A workspace=project
+#   task's brief and project directory are both checked against that RECORDED
+#   batch branch rather than against --branch, which is itself refused here, so
+#   a project-branch task relaunches like any other.
 #   --harness <name> is the explicit per-spawn harness/profile adapter. The old
 #   positional harness arg still works for back-compat.
 #   --model <name> and --effort <low|medium|high|xhigh|max> are concrete profile
@@ -1947,6 +1950,36 @@ delivery_rigor_rank() {  # <mode> -> 3 (most rigor) .. 1 (least); 0 = not a task
   esac
 }
 
+# Workspace model, selected here and nowhere else.
+#
+# Firstmate has exactly two, and which one a task gets is decided EXPLICITLY from
+# its delivery mode rather than inferred from a path, a project name, or the
+# backend:
+#
+#   isolated  every mode but project-branch. The worker takes a disposable copy
+#             of the project (a treehouse pool slot, or an Orca-managed worktree)
+#             and owns a per-task fm/<id> branch inside it. Nothing it does can
+#             reach the captain's own checkout, so the copy is reset on
+#             acquisition and returned at cleanup.
+#   project   mode=project-branch. The worker works in the project's OWN
+#             registered directory, on a batch branch the captain owns, while he
+#             may be working in that same directory. Nothing is allocated, reset,
+#             or returned; bin/fm-project-branch-lib.sh owns the refusals that
+#             replace the isolation, and cleanup leaves the directory untouched.
+#
+# A relaunch adopted both axes from the task's record above, so only a fresh
+# spawn resolves them. Both are settled HERE, ahead of the brief agreement check
+# below, because that check has to read the branch this worker will actually be
+# on rather than the raw flag - which a relaunch never carries.
+if [ "$RELAUNCH" -eq 0 ]; then
+  WORKSPACE=isolated
+  BATCH_BRANCH=
+  if [ "$KIND" = ship ] && [ "$MODE" = project-branch ]; then
+    WORKSPACE=project
+    BATCH_BRANCH=$BRANCH_ARG
+  fi
+fi
+
 # Brief/spawn delivery agreement, checked before any endpoint exists.
 # fm-brief.sh records a ship brief's mode as a fixed "Delivery contract: mode=<mode>"
 # line. A spawn that disagrees would launch a worker whose instructions and whose
@@ -1962,15 +1995,23 @@ if [ "$KIND" = ship ]; then
   fi
   # Same drift guard for the batch branch: a project-branch brief tells the worker
   # which branch it may touch, so a spawn onto a different one would hand it
-  # instructions for a branch it is not on.
+  # instructions for a branch it is not on. It is checked against BATCH_BRANCH -
+  # the branch this worker will actually be put on - and NOT against the raw
+  # --branch flag: a relaunch is refused that flag by design because it reuses
+  # the task's recorded batch branch, so comparing the flag made every
+  # project-branch relaunch impossible rather than catching real drift.
   if [ "$MODE" = project-branch ] && [ -n "$BRIEF_MODE" ]; then
     BRIEF_BRANCH=$(sed -n 's/^Delivery contract: mode=[^ ]* branch=\(.*\)$/\1/p' "$BRIEF" | head -n 1)
     if [ -z "$BRIEF_BRANCH" ]; then
       echo "error: $BRIEF records mode=project-branch with no branch=; re-scaffold it with bin/fm-brief.sh --mode project-branch --branch <batch-branch>" >&2
       exit 1
     fi
-    if [ "$BRIEF_BRANCH" != "$BRANCH_ARG" ]; then
-      echo "error: branch mismatch for $ID: the brief says branch=$BRIEF_BRANCH but this spawn passed --branch $BRANCH_ARG; correct the flag or re-scaffold the brief so the worker's instructions and the task record agree" >&2
+    if [ "$BRIEF_BRANCH" != "$BATCH_BRANCH" ]; then
+      if [ "$RELAUNCH" -eq 1 ]; then
+        echo "error: branch mismatch for $ID: the brief says branch=$BRIEF_BRANCH but the task records branch=${BATCH_BRANCH:-none}; inspect the task record or re-scaffold the brief onto the recorded batch branch so the worker's instructions and the task record agree" >&2
+      else
+        echo "error: branch mismatch for $ID: the brief says branch=$BRIEF_BRANCH but this spawn passed --branch $BRANCH_ARG; correct the flag or re-scaffold the brief so the worker's instructions and the task record agree" >&2
+      fi
       exit 1
     fi
   fi
@@ -2000,34 +2041,6 @@ BRIEF_REAL="$BRIEF_DIR_REAL/$(basename "$BRIEF")"
 # once here so every downstream comparison uses the same physical form
 # (docs/herdr-backend.md "Known gaps").
 PROJ_ABS_REAL=$(cd "$PROJ_ABS" 2>/dev/null && pwd -P) || PROJ_ABS_REAL="$PROJ_ABS"
-
-# Workspace model, selected here and nowhere else.
-#
-# Firstmate has exactly two, and which one a task gets is decided EXPLICITLY from
-# its delivery mode rather than inferred from a path, a project name, or the
-# backend:
-#
-#   isolated  every mode but project-branch. The worker takes a disposable copy
-#             of the project (a treehouse pool slot, or an Orca-managed worktree)
-#             and owns a per-task fm/<id> branch inside it. Nothing it does can
-#             reach the captain's own checkout, so the copy is reset on
-#             acquisition and returned at cleanup.
-#   project   mode=project-branch. The worker works in the project's OWN
-#             registered directory, on a batch branch the captain owns, while he
-#             may be working in that same directory. Nothing is allocated, reset,
-#             or returned; bin/fm-project-branch-lib.sh owns the refusals that
-#             replace the isolation, and cleanup leaves the directory untouched.
-#
-# A relaunch adopted both axes from the task's record above, so only a fresh
-# spawn resolves them.
-if [ "$RELAUNCH" -eq 0 ]; then
-  WORKSPACE=isolated
-  BATCH_BRANCH=
-  if [ "$KIND" = ship ] && [ "$MODE" = project-branch ]; then
-    WORKSPACE=project
-    BATCH_BRANCH=$BRANCH_ARG
-  fi
-fi
 
 # The project-directory dispatch guards, run BEFORE any endpoint, allocation, or
 # durable record exists so a refusal here leaves nothing behind. Each one is a
