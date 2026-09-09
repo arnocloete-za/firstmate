@@ -71,10 +71,22 @@
 // publishes nothing at all, so a stop can never leave the board reporting things
 // as missing that were only unread.
 //
-// A cycle rewrites the page only when the board's own content changed. The
-// comparison is a hash over the rendered page with every per-run stamp
-// neutralized, carried in the page as <meta name="fm-dashboard-content">, so an
-// unchanged fleet leaves the file - and where the captain was reading - alone.
+// Which run rewrites the page is deliberately asymmetric, and this is where
+// that rule lives.
+//
+// A run the captain asked for ALWAYS rewrites the page, because re-running the
+// command is the refresh - the page says so in its own header. Handing him back
+// a board stamped an hour ago, its live section reading "read 60m ago", is the
+// staleness he ran the command to answer, and a one-shot page has no sidecar to
+// bring those stamps forward in the tab.
+//
+// A WATCH cycle rewrites the page only when the board's own content changed.
+// Nobody asked for that pass, the page is open in front of him, and
+// republishing an unchanged board would throw away his scroll position and the
+// overlay he had open. The comparison is a hash over the rendered page with
+// every per-run stamp neutralized, carried in the page as
+// <meta name="fm-dashboard-content">, so an unchanged fleet leaves the file -
+// and where the captain was reading - alone.
 //
 // The CLOCK is neutralized along with those stamps, because it is not the board
 // changing: a relative age ("2h ago") and the recent-commit highlight are both
@@ -1324,10 +1336,9 @@ async function publish(path, text) {
 const CONTENT_META = /<meta name="fm-dashboard-content" content="([^"]*)"/;
 let lastStamp = null;
 
-// One pass: read everything, publish the page - always when the command was run
-// for it, and under --watch only when the board changed - and under --watch
-// publish the stamp every time, because the stamp is what proves to the open
-// page that this command is still reading.
+// One pass: read everything, publish the page on the rule this module's header
+// owns, and under --watch publish the stamp every time, because the stamp is
+// what proves to the open page that this command is still reading.
 async function cycle() {
   const started = Date.now();
   const registry = await readRegistry(await readNumbering());
@@ -1377,14 +1388,8 @@ async function cycle() {
   await mkdir(dirname(out), { recursive: true, mode: 0o700 });
   const existing = await readFile(out, 'utf8').catch(() => null);
   const changed = CONTENT_META.exec(existing || '')?.[1] !== contentHash;
-  // The two paths want opposite things, and the page itself says which is
-  // which: re-running the command IS the refresh, so a plain run always
-  // rewrites - handing the captain back a page stamped an hour ago, with a live
-  // section reading "read 60m ago", is the staleness he ran the command to
-  // answer. A watch cycle is the other half: nobody asked for that pass, the
-  // page is open in front of him, and republishing an unchanged board would
-  // throw away his scroll position and the overlay he has open. So the clock
-  // stays out of the hash and only the fleet moving may rewrite a watched page.
+  // A plain run always rewrites; a watch cycle only when the board changed.
+  // This module's header owns that asymmetry and why it is one.
   if (changed || !opts.watch) {
     await publish(out, render({
       generatedAt: localStamp(now),

@@ -231,6 +231,19 @@ test_changed_dependency_selection_and_unmapped_failure() {
   git -C "$repo" add tests/assets
   git -C "$repo" -c user.name=test -c user.email=test@example.invalid commit -qm asset-change
 
+  # A retired asset: the departed path has no consuming suite left to name it,
+  # so it selects nothing rather than refusing the whole selection and leaving a
+  # legitimate retirement unable to select its own changed tests.
+  git -C "$repo" rm -q tests/assets/example-harness.mjs
+  sed -i.bak '/assets\/example-harness.mjs/d' "$repo/tests/fm-brief.test.sh" \
+    && rm -f "$repo/tests/fm-brief.test.sh.bak"
+  listed=$(cd "$repo" && bin/fm-test-run.sh --list --changed --base HEAD) \
+    || fail "a retired test asset must not refuse the whole changed selection"
+  assert_contains "$listed" "tests/fm-brief.test.sh" \
+    "the suite that dropped a retired asset must still select itself"
+  git -C "$repo" add -A tests
+  git -C "$repo" -c user.name=test -c user.email=test@example.invalid commit -qm asset-retirement
+
   printf '\n' >>"$repo/tests/fm-backend-herdr-eventwait.test.py"
   listed=$(cd "$repo" && bin/fm-test-run.sh --list --changed --base HEAD)
   assert_contains "$listed" "tests/fm-backend-herdr-smoke.test.sh" "eventwait test selects Herdr coverage"
