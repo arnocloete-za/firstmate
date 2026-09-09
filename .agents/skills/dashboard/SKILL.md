@@ -50,19 +50,47 @@ watch mode, the one sibling file it reads, both under `$FM_HOME/.dashboard/`.
 `/dashboard` does not run `/bearings`.
 The chat digest is that command's job; this one is the page.
 
+## His own `dashboard` command
+
+The captain does not go through firstmate to read his board.
+He types `dashboard` for the work board, or `dashboard personal` for the
+personal one, and gets the page opened and kept current in one command.
+`bin/fm-dashboard-open.sh`'s header owns its arguments, its pinned interval,
+and how it decides whether a refresh is already running.
+`bin/fm-install-dashboard-command.sh`'s header owns how that name reaches his
+PATH, and why it is a link rather than a copy.
+Both are thin: the page, the board table, and the read-only contract stay the
+generator's.
+
+The refresh loop that command leaves behind is HIS process, not one firstmate
+holds.
+He stops it with `dashboard --stop`, asks after it with `dashboard --status`,
+and closing the terminal he started it in leaves it running.
+Ctrl-C stops only a watch he ran in the foreground himself.
+
+So when he says the board goes stale on him, the answer is `dashboard --status`
+and then `dashboard` - not a fresh page from firstmate.
+If a loop he started by hand is already refreshing that board, the command says
+so, names its pid, and starts nothing rather than putting two loops on one page;
+ending that one is his call and the command never signals it.
+When `dashboard` is not found at all, run
+`bin/fm-install-dashboard-command.sh --check`: it says which of the two reasons
+it is, nothing installed or installed somewhere his PATH does not reach.
+Read that command's exit status rather than guessing from its wording.
+
+Never run `dashboard` for him from firstmate's own session.
+It opens a window on his desktop and leaves a process running in his name, and
+both of those are his to start.
+Give him the command.
+
 ## Keeping the page current
 
-`bin/fm-dashboard.mjs --watch` re-reads the fleet on an interval until the
-captain stops it, so the page he already has open updates itself.
+`bin/fm-dashboard.mjs --watch` is what that refresh loop actually is: the
+generator re-reading the fleet on an interval until it is stopped, so the page
+he already has open updates itself.
 Its header owns the interval, the default, and the whole watch contract.
-
-Offer it when he says the board goes stale on him, asks how to refresh it, or is
-about to sit with it while work is running.
-Give him the command to run in his own terminal, with the link, and tell him
-Ctrl-C is how it stops - the watch is his process, not one firstmate holds.
-Never start a watch for him from firstmate's own session: it would die with the
-turn, and a watch nobody can see or stop is worse than no watch.
-One watch per page is enough; a second one adds reads and changes nothing.
+One loop per page is enough; a second one adds reads and changes nothing, which
+is why the command reuses a loop instead of starting another.
 
 The page reloads itself only when the board actually changed, and it keeps his
 scroll position when it does, so it can be left open.

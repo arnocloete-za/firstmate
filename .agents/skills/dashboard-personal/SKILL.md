@@ -21,6 +21,9 @@ bin/fm-dashboard.mjs --group personal
 ```
 
 Then give the captain the `open:` line it prints, exactly as `/dashboard` does.
+His own shell command for this board is `dashboard personal`, which the
+[`dashboard` skill](../dashboard/SKILL.md) owns along with everything else about
+keeping a board current.
 
 Everything else is that skill's: read the internal
 [`dashboard` skill](../dashboard/SKILL.md) for what the page shows, the watch,

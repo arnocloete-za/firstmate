@@ -177,13 +177,17 @@ Claude and grok use the slash form shown here; codex uses the same names with `$
 | `/bearings`        | Generate a concise four-section chat digest from bounded fleet state, including registered remote-home ledgers; use `/bearings file` to also replace today's dated report in `data/`, and add `include PRs` for live GitHub enrichment |
 | `/dashboard`       | Generate one read-only local page for the work board: the work running right now - what each task is doing, what it waits on, and the copyable command for its own terminal, ranked so whatever wants the captain is first - beside each of that board's projects' cleanliness, last commit, and branch. Display only: nothing on the page can change anything, and re-running the command is the refresh. Add `--watch` to keep re-running it until Ctrl-C, so the open page updates itself when the fleet changes and says so plainly when the watch stops |
 | `/dashboard-personal` | The same page for the personal board, so work and personal projects are read separately. One generator renders both boards; a project's `data/projects.md` entry decides which board it is on, and an unmarked project stays on the work board |
+| `/updatefirstmate` | Self-update the running firstmate and its secondmates to the latest from origin with fast-forward-only pulls, then re-read instructions and nudge secondmates |
+| `/stow`            | Sweep the session for uncaptured durable knowledge, persist the open work records this session knows are unfiled or now wrong, curate tiered startup memory with decay and cold archival, enforce each home's budget or surface the required decision, cascade to registered second mates, and report what is safe to reset |
 
 Every project and every running task carries one number the captain reads and says aloud, so a piece of work can be named by a number instead of a name matched letter by letter.
 The work board numbers its projects from 1 and the personal board from 50, both in registry order within their own board; work on a project that is registered nowhere takes the lowest free number from 100 when it starts and gives it back when it finishes; and firstmate's own repository holds a reserved number that is never counted in a board's run, so registering it changes nothing already learned.
 The number leads a task's terminal name too, so finding a terminal is reading a number.
 `bin/fm-task-number-lib.sh`'s header owns the scheme.
-| `/updatefirstmate` | Self-update the running firstmate and its secondmates to the latest from origin with fast-forward-only pulls, then re-read instructions and nudge secondmates |
-| `/stow`            | Sweep the session for uncaptured durable knowledge, persist the open work records this session knows are unfiled or now wrong, curate tiered startup memory with decay and cold archival, enforce each home's budget or surface the required decision, cascade to registered second mates, and report what is safe to reset |
+
+Each board also has a shell command of its own, so reading it never has to go through firstmate: `dashboard` opens the work board and `dashboard personal` the personal one, each leaving one refresh loop running so the page keeps itself current, and `dashboard --stop` ends it.
+Run [`bin/fm-install-dashboard-command.sh`](bin/fm-install-dashboard-command.sh) once to link that name into your own bin directory.
+It installs a link rather than a copy, so a later self-update cannot leave you on an older command; it never replaces a `dashboard` it did not install; and it tells you, rather than reporting success, when the directory it used is not on your PATH.
 
 Bearings invocation examples:
 
