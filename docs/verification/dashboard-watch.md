@@ -5,7 +5,7 @@ Audience: maintainer verification.
 This record supports the active guarantee that a `bin/fm-dashboard.mjs --watch` page picks up new content on its own, and stops claiming to be current when the watch stops.
 `bin/fm-dashboard.mjs`'s header owns the watch contract; the internal [`dashboard` skill](../../.agents/skills/dashboard/SKILL.md) owns when to offer it.
 
-The page-side half is browser behavior, so a stub proves nothing about it: whether a `file://` page may load a sibling script, whether a cache-busting query defeats the file cache, and whether a reload restores a scroll position are all decided by the browser, not by this repository.
+The page-side half is browser behavior, so a stub proves nothing about it: whether a `file://` page may load a sibling script, whether a cache-busting query defeats the file cache, whether a reload restores a scroll position, and whether a `<dialog>` reopened during a fresh load is really modal are all decided by the browser, not by this repository.
 `tests/fm-dashboard.test.sh` is the portable regression and pins everything the command publishes - change-only republication, the sidecar and its expiry, the stop path, and that a stopped watch leaves nothing staged.
 The checks below are the ones only a browser can answer.
 
@@ -84,7 +84,41 @@ $ chrome-devtools-axi eval "() => { readAt = Date.now() - 11*60000; tick(); cons
 result: "{\"text\":\"read 11m ago · the watch has stopped - too old to walk into a terminal on; re-run /dashboard\",\"stale\":true}"
 ```
 
+## An overlay the captain had open survives the reload
+
+Verified on 2026-09-09 with Google Chrome 151.0.7922.169 on Linux, driven through `chrome-devtools-axi`, against a three-project registry published by `--watch --interval 5`.
+The board is meant to be left open, so a reload that closed the panel he was reading would make the watch worse than no watch.
+A project card was clicked, then a commit was made in a DIFFERENT project so the board genuinely changed underneath the open overlay.
+
+```
+$ chrome-devtools-axi click @g19:1_14           # the spock card
+$ git -C <fixture>/morpheus commit -aqm "a brand new commit while the captain reads spock"
+# ... 13s, one republication ...
+$ chrome-devtools-axi eval "() => { const d = document.querySelector('dialog.detail[open]'); return { openProject: d ? d.dataset.project : null, newCommitOnBoard: document.body.innerHTML.includes('a brand new commit'), scrollY: window.scrollY }; }"
+result: "{\"openProject\":\"spock\",\"newCommitOnBoard\":true,\"scrollY\":0}"
+```
+
+The new commit is on the page, so it really did reload, and spock's overlay is open on the page that replaced it.
+The overlay is reopened by project NAME, so a board that gained or lost a project cannot reopen the wrong one.
+
+## The clock alone does not reload the page, and the tab keeps its own ages honest
+
+A relative age and the recent-commit highlight are the only things on this page the clock decides, and both are recomputed in the tab out of the absolute instant the markup carries.
+That is what lets the command leave the clock out of the hash that decides the board changed - which it must, because a board of ten projects would otherwise be rewritten, and the captain's overlay thrown away, most cycles.
+
+With the watch still running and the fleet unchanged, the page file was left alone across an age rollover while the tab was read:
+
+```
+$ grep -o 'class="ago" data-at="[^"]*">[^<]*' <fixture>/board.html | head -2
+class="ago" data-at="2026-09-09T11:10:59+02:00">1m ago
+class="ago" data-at="2026-09-09T11:10:59+02:00">1m ago
+$ chrome-devtools-axi eval "() => { const s=[...document.querySelectorAll('span.ago')].map(n=>n.textContent); const d=document.querySelector('dialog.detail[open]'); return {painted:[...new Set(s)], stillOpen: d?d.dataset.project:null}; }"
+result: "{\"painted\":[\"3m ago\",\"2m ago\"],\"stillOpen\":\"spock\"}"
+```
+
+The file on disk still says `1m ago` and its inode never changed, so nothing rewrote it; the tab is showing `2m ago` and `3m ago`; and the overlay from the previous check is still open through all of it.
+
 ## Refreshing this record
 
-Re-run the checks above against a current Chrome after any change to the page-side pickup, to the sidecar's fields, or to how the age indicator is rendered.
+Re-run the checks above against a current Chrome after any change to the page-side pickup, to the sidecar's fields, to what the page carries across a reload, or to how an age is rendered.
 The command half needs no browser and is covered by `bash tests/fm-dashboard.test.sh`.
