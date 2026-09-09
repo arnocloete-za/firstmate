@@ -15,7 +15,11 @@ command -v jq >/dev/null 2>&1 || { echo "skip: jq not found"; exit 0; }
 
 make_home() {  # <name>
   local home="$TMP_ROOT/$1" fakebin
-  mkdir -p "$home/state" "$home/data"
+  # Private, exactly as a real home is: arming the board as a process-event
+  # source refuses a group- or world-readable state root. Creating it under the
+  # caller's umask makes this suite pass only on a machine whose umask already
+  # happens to be 077.
+  (umask 077; mkdir -p "$home/state" "$home/data")
   fakebin=$(fm_fakebin "$home")
   fm_fake_exit0 "$fakebin" lavish-axi
   printf '%s\n' "$home"
